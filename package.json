@@ -1,0 +1,50 @@
+{
+  "name": "dsh-session-groups",
+  "version": "0.1.0",
+  "description": "Session groups for DeepSeek Harness: split one workspace into unrelated project groups.",
+  "license": "MIT",
+  "author": "Zcc50",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Zcc50/dsh-session-groups.git"
+  },
+  "homepage": "https://github.com/Zcc50/dsh-session-groups",
+  "bugs": {
+    "url": "https://github.com/Zcc50/dsh-session-groups/issues"
+  },
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "session",
+    "workspace",
+    "groups",
+    "sidebar"
+  ],
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-sidebar",
+        "@deepseek-ai/dsh-client-ui-workspace"
+      ]
+    }
+  }
+}

@@ -1,0 +1,5 @@
+# Bundle patch: inserts the Client-only Session Groups plugin row.
+- insert:
+    - id: session-groups
+      name: dsh-session-groups
+      config: {}
