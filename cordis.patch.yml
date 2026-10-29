@@ -1,5 +1,5 @@
-# Bundle patch: inserts the Client-only Session Groups plugin row.
+# Bundle patch: inserts the Client-only Workspace Frontend plugin row.
 - insert:
-    - id: session-groups
-      name: dsh-session-groups
+    - id: workspace-frontend
+      name: 'dsh-workspace-frontend'
       config: {}

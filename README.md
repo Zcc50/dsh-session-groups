@@ -1,57 +1,65 @@
-# Session Groups for DeepSeek Harness
+# Workspace Frontend for DeepSeek Harness
 
-Split one workspace into custom **session groups**, so unrelated projects living in the same workspace stay apart.
+Rebuilds the left sidebar of DeepSeek Harness into a grouped **workspace → group → session** browser, and repaints every session row.
 
-DeepSeek Harness / 会话分组：把同一个工作区里的会话拆成自定义分组，让互不相关的项目各自归位。
+DeepSeek Harness / 工作区美化：把左侧栏重做成「工作区 → 分组 → 会话」，并让会话行显示状态、上下文与花费。
 
 ## Features
 
-- **Sidebar groups** — the sidebar session list becomes `workspace → group → session`. Sessions are grouped by hand, not by folder, so several projects can share one workspace.
-- **Panel entry** — a "Session groups" entry in the left sidebar opens a management board: pick a workspace, create/rename/reorder/delete groups, and move sessions between them.
-- **Session menu** — each session row's "…" menu offers *Open*, *Rename*, *Move to group…*, *Archive/Unarchive*, and *Copy session ID*.
-- **Automatic default workspace title** — a stored `default-workspace` title renders as a localized "Default workspace".
-- **Local-only data** — group definitions and assignments live in the browser's `localStorage` (`dsh.session-groups.v1`), keyed by workspace. Nothing is written to the session log.
+### Grouped sidebar
+
+- The plugin shadows the shipped `sidebar.workspaces` (`priority: -1`) with its own browser: workspaces, then user-defined groups, then sessions. Sessions in no group stay in an **Ungrouped** section at the end of each workspace; sessions in no workspace at all appear in a **No workspace** section.
+- Group actions, revealed on hover: new session, move up, move down, change colour (8-colour palette), rename (inline), delete (two-click confirm).
+- **A session started from a group's `+` lands in that group**; a collapsed group is expanded first.
+- Sessions drag between groups and across workspaces. Same-workspace drops rewrite the group assignment; cross-workspace drops are recorded as a display-level move (Host workspace membership is untouched).
+- Manual order: `↑`/`↓` on a group reorders groups, `↑`/`↓` on a session reorders it inside its group. A group ordered by hand stops auto-sorting by time.
+- Workspace actions: add workspace (native directory picker), delete workspace (two-click confirm). Deletion removes the Host registration only — sessions and files stay on disk, their rows fall into **No workspace**.
+
+### Session rows
+
+- Whole-row click opens the session.
+- Leading ring: blue = a question awaits you, yellow = approval / plan review pending, green = finished while unread. Colour changes play a 1 s exit plus 1 s enter sweep.
+- Context ring: green → red gradient by context usage, spins while the session runs; warns once at 20 % and again at 40 %.
+- Clock icon when the session has an active scheduled task.
+- Per-session cost and relative last-activity time; group and workspace headers show sums.
+- Row menu: open, rename, move to group…, archive / unarchive, copy session ID.
+
+### Layout
+
+Resize handles on both sidebar boundaries (a thin line plus a rounded pull tab); drag to resize. Limits come from the Host: left 264–420 px, right up to 70 % of the viewport.
 
 ## Install
 
-This bundle is a Client-only DeepSeek Harness plugin. It has no runtime dependencies and needs no build step.
+Client-only plugin bundle — no dependencies, no build step.
 
 ```sh
-# clone or download this repository, then point the harness plugin manager at the directory
+# point the harness plugin manager at this directory
 plugin_manager install_bundle  target: <absolute path to this directory>
 ```
 
-Or paste the absolute path into a DSH session and ask the agent to install it. Restart / refresh the page afterwards. The sidebar entry appears under the sidebar's global panel icons.
+Then refresh the page (`Ctrl+R`). The sidebar is rebuilt immediately and the **Workspace** entry appears in the sidebar icon column.
+
+Group data is local to the browser: `localStorage['dsh.session-groups.v1']` (`sections`, `assignments`, `moves`, `orders`). Nothing is written to the session log.
 
 ## Compatibility
 
 Built and verified against DeepSeek Harness 0.2.1-rc.3.
 
-It relies on these public extension points:
+Extension points used:
 
-- Client slots: `sidebar.panellist`, `main`, `sidebar.workspaces` (shadowing, `priority: -1`), `sidebar.workspaces.session.menu.item`, `sidebar.session.row.leading`, `sidebar.session.row.hover`, `shell.overlay`
-- Standard hooks: `useWorkspaces` (`sessionIds`, `archivedSessionIds`, `pinnedSessionIds`), `useSessions` (`byId`, `retainedBy.mainView`)
-- Services: `ctx.uiWorkspace` (`openSession`, `startSession`, `archiveSession`, `unarchiveSession`, `pickDirectory`), `ctx.workspaces.create`, `ctx.layout.selectPanel`, `ctx.sessions.using`
+- Slots: `sidebar.workspaces` (shadowed, `priority: -1`), `sidebar.panellist`, `main`, `sidebar.workspaces.session.menu.item`, `sidebar.session.row.leading`, `sidebar.session.row.hover`, `shell.overlay`
+- Hooks: `useWorkspaces`, `useSessions`, `useSessionStatus` (`pendingInteraction.kind`, `completionUnread`), `usePanelInfo`
+- Services: `uiWorkspace` (`openSession`, `openWorkspace` + `beforeOpen`, `startSession`, `archiveSession`, `unarchiveSession`, `pickDirectory`), `workspaces.create` / `.delete`, `sessions.using` / `.refreshProjections`, `layout.selectPanel`, `remote.schedule.catalog`
+- Theme: `--dsw-alias-*` tokens only, each with a fallback colour. Skins that style the shipped browser by DOM class do not reach this list; token-level theming does.
 
-Theme colours come from `--dsw-alias-*` tokens, so the plugin follows any installed skin (including `dsh-claude-style`) for palette-level customisation. Skins that target the shipped browser's DOM classes do not reach the custom sidebar list.
+Session cost is read from `GET /dsh-claude-style/session-cost?id=<sessionId>`, provided by the `dsh-claude-style` skin (`cny` in units of 1e-6 yuan). Without that skin the cost column shows `—`.
 
 ## Limitations
 
-- No drag-and-drop ordering, no hover detail cards, no content search, no workspace-tree nesting.
-- Session menu is the five built-in actions above; pin and fork are not exposed yet.
-- One blank session (the current one) is shown; archived sessions are hidden unless toggled.
-
-## Data migration
-
-Groups are stored per browser, per workspace:
-
-```js
-// export (Console)
-copy(localStorage.getItem('dsh.session-groups.v1'))
-// import (Console, then reload)
-localStorage.setItem('dsh.session-groups.v1', `paste JSON here`);
-location.reload();
-```
+- Session order is plugin-local; the Host's own list order is never rewritten.
+- No content search in the browser, no workspace nesting, no drag reordering of groups (use `↑`/`↓`).
+- The shipped row menu and hover card are not reused; this plugin renders its own.
+- **No workspace** may also list subagent sessions if the Host reports them in the session snapshot.
 
 ## License
 

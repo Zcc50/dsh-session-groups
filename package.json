@@ -1,17 +1,17 @@
 {
-  "name": "dsh-session-groups",
+  "name": "dsh-workspace-frontend",
   "version": "0.1.0",
-  "description": "Session groups for DeepSeek Harness: split one workspace into unrelated project groups.",
+  "description": "Workspace frontend rebuild for DeepSeek Harness: session groups, drag assignment, sidebar polish and resize handles.",
   "license": "MIT",
   "author": "Zcc50",
   "type": "module",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Zcc50/dsh-session-groups.git"
+    "url": "git+https://github.com/Zcc50/dsh-workspace-frontend.git"
   },
-  "homepage": "https://github.com/Zcc50/dsh-session-groups",
+  "homepage": "https://github.com/Zcc50/dsh-workspace-frontend",
   "bugs": {
-    "url": "https://github.com/Zcc50/dsh-session-groups/issues"
+    "url": "https://github.com/Zcc50/dsh-workspace-frontend/issues"
   },
   "keywords": [
     "dsh-plugin",
@@ -19,7 +19,8 @@
     "session",
     "workspace",
     "groups",
-    "sidebar"
+    "sidebar",
+    "frontend"
   ],
   "exports": {
     ".": "./index.js",
