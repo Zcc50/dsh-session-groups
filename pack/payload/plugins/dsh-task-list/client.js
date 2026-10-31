@@ -253,7 +253,6 @@ window.__ModuleLoader__.load({
       '.dstl-status-section-empty{opacity:.45}',
       '.dstl-section-box{margin:2px 0 5px;padding:2px 3px 4px;border:1px solid var(--dsw-alias-border-l1,#e3e0da);border-radius:10px;background:var(--dsw-alias-bg-layer-2,#faf9f7);transition:height .24s cubic-bezier(.2,.8,.2,1),padding .24s ease,margin .24s ease,border-width .24s ease,opacity .24s ease,transform .24s cubic-bezier(.2,.8,.2,1)}',
       '.dstl-section-box-empty{border-style:dashed;background:transparent}',
-      '.dstl-section-box-drop{outline:2px solid var(--dsw-alias-brand-primary,#d97757);outline-offset:-2px;background:var(--dsw-alias-interactive-bg-hover,#f2efe9)}',
       '.dstl-status-section-name{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
       // Standing "abandoned" dock: fixed below the scrolling list, so the live
       // tasks scroll underneath it and never cover it. The header row copies a
@@ -274,13 +273,19 @@ window.__ModuleLoader__.load({
       // empty hint. It sits above the abandoned dock and collapses to zero
       // height until the pointer enters the bottom dock area; a click pins it
       // open and folds the abandoned body down to its title row.
+      // The completed dock is standing furniture like the abandoned one: its
+      // title row is always visible so a phase that finishes into it can never
+      // look like it vanished. A click opens the body.
       '.dstl-docks{flex:none;display:flex;flex-direction:column;min-height:0}',
-      '.dstl-complete-dock{flex:none;min-height:0;max-height:0;overflow:hidden;padding:0 6px;opacity:0;transform:translateY(8px);border-top:1px solid transparent;background:var(--dsw-alias-bg-layer-1,#ffffff);transition:max-height .26s cubic-bezier(.2,.8,.2,1),padding .26s ease,opacity .2s ease,transform .26s cubic-bezier(.2,.8,.2,1),border-color .2s ease}',
-      '.dstl-complete-dock.dstl-complete-revealed{max-height:220px;padding:2px 6px 6px;opacity:1;transform:none;border-top-color:var(--dsw-alias-border-l1,#e3e0da)}',
+      '.dstl-complete-dock{flex:none;min-height:0;max-height:220px;overflow:hidden;padding:2px 6px 6px;opacity:1;transform:none;border-top:1px solid var(--dsw-alias-border-l1,#e3e0da);background:var(--dsw-alias-bg-layer-1,#ffffff);transition:max-height .26s cubic-bezier(.2,.8,.2,1),padding .26s ease,opacity .2s ease,transform .26s cubic-bezier(.2,.8,.2,1),border-color .2s ease}',
       '.dstl-complete-dock.dstl-complete-open{max-height:50vh;overflow-y:auto;scrollbar-width:thin;scrollbar-color:var(--dsw-alias-border-l2,#d6d0c6) transparent}',
       '.dstl-complete-body{padding:0}',
-      '.dstl-row-card[draggable="true"]{cursor:grab}',
-      '.dstl-row-card.dstl-dragging{opacity:.45}',
+      '.dstl-row[data-drag="true"]{cursor:grab}',
+      '.dstl-row.dstl-dragging{opacity:.45}',
+      // A task that is leaving for a dock folds its height to zero and slides
+      // left before the status write lands; the class only kills pointer noise
+      // while the inline transition runs.
+      '.dstl-item-retiring{pointer-events:none;overflow:hidden}',
       '.dstl-group-count{flex:none;margin-top:2px;font-size:11px;line-height:16px;color:var(--dsw-alias-label-secondary,#a39d92);font-variant-numeric:tabular-nums;transition:opacity .12s ease}',
       '.dstl-row:hover .dstl-group-count,.dstl-row:focus-within .dstl-group-count{opacity:0}',
       '.dstl-row-caret{flex:none;width:14px;height:16px;margin-top:2px;padding:0;border:none;border-radius:4px;background:transparent;color:var(--dsw-alias-label-secondary,#a39d92);display:inline-flex;align-items:center;justify-content:center;cursor:pointer}',
@@ -596,7 +601,7 @@ window.__ModuleLoader__.load({
     // Completed standalone tasks and fully-done phases leave the same way and
     // are read in the completed dock. A done child under a running phase still
     // stays in its status section, so the phase keeps its shape.
-    function buildList(list, collapsedParents) {
+    function buildList(list, collapsedParents, previewId) {
       const rows = [];
       const abandoned = [];
       const completed = [];
@@ -616,7 +621,11 @@ window.__ModuleLoader__.load({
             depth: underDock ? 2 : 1,
             hasChildren: children.length > 0,
             childCount: children.length,
-            collapsed: collapsedParents[task.id] === true,
+            // A docked phase/root starts folded: the standing areas are a
+            // stack of one-line summaries until the user opens one.
+            collapsed: collapsedParents[task.id] === undefined
+              ? defaultCollapsed(task)
+              : collapsedParents[task.id] === true,
           });
           // Two levels only, same as the live list: the docked parent plus its
           // direct children. Deeper history stays in the store. The children
@@ -634,12 +643,22 @@ window.__ModuleLoader__.load({
         }
         const children = (task.children || []).filter((child) => child.status !== 'abandoned');
         const hasChildren = children.length > 0;
+        // While a card is dragged, its phase must stay on stage even if the
+        // previewed status would finish it — otherwise the card (and the phase)
+        // would vanish into the dock mid-drag and the drop would land blind.
+        const holdsPreview = Boolean(previewId) && (
+          task.id === previewId
+          || (task.children || []).some((child) => child.id === previewId)
+        );
         // A subtask abandoned on its own still has a live parent; it must show
         // up in the standing area even though the parent keeps its sections.
         for (const child of task.children || []) {
           if (child.status === 'abandoned') collectAbandoned([child], false);
         }
-        if (task.status === 'completed' || (hasChildren && deriveStatus(task) === 'completed')) {
+        // A finished phase moves into the completed dock as a whole; while the
+        // phase is still running, its finished children stay in its own
+        // "completed" band. A standalone task docks by itself.
+        if (!holdsPreview && (task.status === 'completed' || (hasChildren && deriveStatus(task) === 'completed'))) {
           collectCompleted([task], false);
           continue;
         }
@@ -651,10 +670,10 @@ window.__ModuleLoader__.load({
           childCount: children.length,
           // A finished phase is collapsed by default so it stops pushing the
           // active work down; an explicit toggle (true/false) always wins and
-          // lasts until the page reloads.
-          collapsed: hasChildren
+          // lasts until the page reloads. A previewed phase stays open.
+          collapsed: hasChildren && !holdsPreview
             ? (collapsedParents[task.id] === undefined
-              ? deriveStatus(task) === 'completed'
+              ? defaultCollapsed(task)
               : collapsedParents[task.id] === true)
             : false,
         });
@@ -734,6 +753,73 @@ window.__ModuleLoader__.load({
           : task));
       };
       return swap(list);
+    }
+
+    // Local mirror of the Host's `moveBefore`: put `id` in front of `beforeId`
+    // among its siblings (null = last). The drag preview renders this tree, so
+    // the drop commits exactly what the pointer showed.
+    function reorderLocal(list, id, beforeId) {
+      const siblings = siblingsOf(list, id);
+      if (!siblings) return list;
+      const from = siblings.findIndex((task) => task.id === id);
+      if (from < 0) return list;
+      const rest = siblings.filter((task) => task.id !== id);
+      const before = beforeId === null || beforeId === undefined ? null : String(beforeId);
+      if (before === id) return list;
+      let insertAt = rest.length;
+      if (before !== null) {
+        const index = rest.findIndex((task) => task.id === before);
+        if (index < 0) return list;
+        insertAt = index;
+      }
+      if (insertAt === from) return list;
+      const reordered = rest.slice();
+      reordered.splice(insertAt, 0, siblings[from]);
+      const swap = (items) => {
+        if (items === siblings) return reordered;
+        return items.map((task) => ((task.children && task.children.length > 0)
+          ? { ...task, children: swap(task.children) }
+          : task));
+      };
+      return swap(list);
+    }
+
+    // A finished phase and a written-off parent start folded inside the docks:
+    // the standing areas read as a stack of one-line summaries until the user
+    // opens one. `collapsedParents` is tri-state, so an explicit toggle wins.
+    function defaultCollapsed(task) {
+      if (!task) return false;
+      const hasChildren = (task.children || []).length > 0;
+      if (!hasChildren) return false;
+      // A finished phase and a written-off root start folded. A running phase
+      // stays open so a finished child stays visible in its own band.
+      return task.status === 'abandoned' || deriveStatus(task) === 'completed';
+    }
+
+    // The top-level ancestor of `id`: the dock hand-over moves a whole
+    // phase/subtree, so the exit animation has to start from its head.
+    function rootAncestor(list, id) {
+      let node = findTask(list, id);
+      if (!node) return null;
+      for (let guard = 0; guard < 64; guard += 1) {
+        const parentId = node.parentId;
+        if (parentId === null || parentId === undefined) return node;
+        const parent = findTask(list, parentId);
+        if (!parent) return node;
+        node = parent;
+      }
+      return node;
+    }
+
+    // Row drags are short: a 1–2px wobble across the middle would flip the
+    // live preview back and forth. Keep the previous side until the pointer is
+    // clearly past the middle; null means "hold the current preview".
+    function dropSide(rectTop, height, clientY, previousSide) {
+      if (!Number.isFinite(rectTop) || !Number.isFinite(height) || height <= 0) return 'before';
+      const dy = clientY - (rectTop + height / 2);
+      const threshold = Math.min(6, height * 0.3);
+      if (previousSide && Math.abs(dy) < threshold) return null;
+      return dy < 0 ? 'before' : 'after';
     }
 
     // ------------------------------------------------------------------
@@ -1321,25 +1407,14 @@ window.__ModuleLoader__.load({
           h('span', { className: 'dstl-title-text' }, task.title),
           hasNotes ? h(IconChevron, { size: 12, open, className: 'dstl-caret' }) : null);
 
-      // Dragging a card is the reverse of clicking its status ring: the status
-      // sections accept it as a drop target and rewrite the status on drop.
-      const dragProps = isCard ? {
-        draggable: true,
-        onDragStart: (event) => {
-          if (event.dataTransfer) {
-            event.dataTransfer.effectAllowed = 'move';
-            event.dataTransfer.setData('text/plain', task.id);
-          }
-          props.onCardDragStart(task.id);
-        },
-        onDragEnd: () => props.onCardDragEnd(),
-      } : {};
-      // Cards render beside their section, not inside it, so a card has to
-      // forward the same drop handlers and stand in for the section it lives in.
-      const dropProps = isCard ? {
-        onDragOver: props.onRowDragOver,
-        onDragLeave: props.onRowDragLeave,
-        onDrop: props.onRowDrop,
+      // Every live row is a pointer drag source: a card reorders inside its
+      // parent's status band, a top-level row reorders the phases. Docks never
+      // drag. Hit-testing during the gesture decides the drop target, so no
+      // HTML5 drag/drop handlers are involved.
+      const canDrag = !abandoned && dockKind !== 'completed';
+      const pointerProps = canDrag ? {
+        'data-drag': 'true',
+        onPointerDown: (event) => props.onRowPointerDown(event, task.id),
       } : {};
 
       const row = h('div', {
@@ -1359,8 +1434,7 @@ window.__ModuleLoader__.load({
           props.onSelect(task.id);
           if (folds) props.onToggleChildren(task.id);
         },
-        ...dragProps,
-        ...dropProps,
+        ...pointerProps,
       },
         h('span', { className: 'dstl-status-slot' },
           h('button', {
@@ -1521,14 +1595,14 @@ window.__ModuleLoader__.load({
       const abandonedTimer = useRef(0);
       const abandonedEnterTimer = useRef(0);
       const [dragTaskId, setDragTaskId] = useState(null);
-      const [dropTarget, setDropTarget] = useState(null);
+      // The reorder preview: the same siblings reordered live while the
+      // pointer moves. Nothing is written until drop.
+      const [dragPreview, setDragPreview] = useState(null);
       const [renamingId, setRenamingId] = useState(null);
       const [renameDraft, setRenameDraft] = useState('');
       const [pendingDeleteId, setPendingDeleteId] = useState(null);
       const [panelWidth, setPanelWidth] = useState(readStoredWidth);
       const [resizing, setResizing] = useState(false);
-      const [creating, setCreating] = useState(null);
-      const [createDraft, setCreateDraft] = useState('');
       const [notesEditingId, setNotesEditingId] = useState(null);
       const [notesDraft, setNotesDraft] = useState('');
       const [menuOpenId, setMenuOpenId] = useState(null);
@@ -1561,6 +1635,16 @@ window.__ModuleLoader__.load({
         flipRects.current = rects;
       };
       const dragTaskIdRef = useRef(null);
+      // Tasks whose exit animation is running: a second click must not start a
+      // second fold or write before the first one lands.
+      const retiringRef = useRef(new Set());
+      // The live reorder preview and the target/side the pointer last settled
+      // on (hysteresis). Both are refs so dragover never reads a stale render.
+      const dragPreviewRef = useRef(null);
+      const dragSideRef = useRef(null);
+      // Window-level pointer listeners for the active drag; cleanup runs on
+      // pointerup/cancel and on unmount.
+      const pointerHandlersRef = useRef(null);
       const dragLeaveTimer = useRef(0);
       // Event handlers need the list as it is right now: the optimistic update
       // and its rollback both read it, and a closure would see a stale copy.
@@ -1610,7 +1694,11 @@ window.__ModuleLoader__.load({
       // list the Host returns. A rejection restores the pre-op copy. The box
       // snapshot happens here so every write path — ring click, drag, delete,
       // rename, create — can glide cards instead of jumping them.
-      const runOp = (optimistic, op) => {
+      // `onDone` runs once the Host list has been adopted. A retired row leaves
+      // a fill-forwards animation (folded height, zero opacity) on its node;
+      // the restore must cancel it after the write, on success just as on
+      // failure, or a reused node keeps the folded look and the task looks gone.
+      const runOp = (optimistic, op, onError, onDone) => {
         if (!sessionId) return;
         const before = tasksRef.current;
         snapshotRects();
@@ -1620,9 +1708,11 @@ window.__ModuleLoader__.load({
           setTasks(toTree(body.tasks));
           lastSyncRef.current = stampOf(body);
           setNotice('');
+          if (typeof onDone === 'function') onDone();
         }).catch((error) => {
           setTasks(before);
           setNotice(errorText(error));
+          if (typeof onError === 'function') onError();
         }).finally(() => {
           writingRef.current = false;
         });
@@ -1630,15 +1720,18 @@ window.__ModuleLoader__.load({
 
       // Agent writes land in the Host store, not in this React tree, so the
       // panel polls the session file and adopts it when the stamp moves. The
-      // poll pauses while the tab is hidden, while a local write is in flight,
-      // and while a row is mid-edit (a swap there would eat the draft).
+      // poll pauses while the tab is hidden and while a local write is in
+      // flight. It used to pause for the whole duration of a rename / notes
+      // edit too; an edit that never closed (e.g. the create flow drops the row
+      // straight into rename and the user clicks elsewhere) then stalled the
+      // poll forever and agent writes never showed up. The drafts live in their
+      // own state, so a pull can replace the tree mid-edit without losing them.
       useEffect(() => {
         if (!sessionId) return undefined;
         let alive = true;
         const tick = () => {
           if (!alive || document.visibilityState === 'hidden') return;
           if (writingRef.current) return;
-          if (notesEditingId !== null || creating !== null || renamingId !== null) return;
           readList(sessionId).then((body) => {
             if (!alive) return;
             const stamp = stampOf(body);
@@ -1661,7 +1754,7 @@ window.__ModuleLoader__.load({
           window.clearInterval(timer);
           document.removeEventListener('visibilitychange', onVisible);
         };
-      }, [sessionId, notesEditingId, creating, renamingId]);
+      }, [sessionId]);
 
       // Rows that appear after the first paint slide in from the left and play
       // the ring fill. The first load only records what it showed, so opening
@@ -1881,7 +1974,7 @@ window.__ModuleLoader__.load({
             { duration: 240, easing: 'cubic-bezier(.2,.8,.2,1)' },
           );
         }
-      }, [tasks, collapsedParents, completedOpen, abandonedCollapsed]);
+      }, [tasks, dragPreview, collapsedParents, completedOpen, abandonedCollapsed]);
 
       // Remember the statuses on screen so the next render can tell a card that
       // changed section (remounted) from one that simply appeared.
@@ -1891,24 +1984,10 @@ window.__ModuleLoader__.load({
         prevStatusRef.current = map;
       }, [tasks]);
 
-      // A drag that ends outside any status section (or over the browser chrome)
-      // still has to clear the drag state; the section handlers cannot see it.
-      useEffect(() => {
-        const reset = () => {
-          dragTaskIdRef.current = null;
-          setDragTaskId(null);
-          setDropTarget(null);
-          if (dragLeaveTimer.current) {
-            window.clearTimeout(dragLeaveTimer.current);
-            dragLeaveTimer.current = 0;
-          }
-        };
-        document.addEventListener('dragend', reset);
-        document.addEventListener('drop', reset);
-        return () => {
-          document.removeEventListener('dragend', reset);
-          document.removeEventListener('drop', reset);
-        };
+      // The pointer drag listens on window; unmounting the panel mid-drag must
+      // drop those listeners too.
+      useEffect(() => () => {
+        if (pointerHandlersRef.current) pointerHandlersRef.current.cleanup();
       }, []);
 
       if (!createPortal || !hostBody) return null;
@@ -1924,6 +2003,164 @@ window.__ModuleLoader__.load({
       // height instead.
       const heroMode = props && props.heroMode === true;
       const bottom = heroMode ? PANEL_GAP : Math.round(composerHeight) + PANEL_GAP;
+
+      // Leaving for a dock is a hand-over, not a state flip: the row folds its
+      // height to zero and slides left first, then the write lands so the task
+      // shows up in the standing area already folded. The same animation runs
+      // for a card leaving a running phase and for a whole phase/subtree.
+      const prefersReducedMotion = () => {
+        try {
+          return Boolean(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+        } catch (error) {
+          return false;
+        }
+      };
+
+      const collapseRetired = (node) => {
+        if (!node || !node.isConnected || typeof node.animate !== 'function') return null;
+        const height = node.offsetHeight;
+        if (height <= 0) return null;
+        const computed = window.getComputedStyle(node);
+        const from = {
+          height: height + 'px',
+          opacity: 1,
+          transform: 'translateX(0)',
+          marginTop: computed.marginTop,
+          marginBottom: computed.marginBottom,
+          paddingTop: computed.paddingTop,
+          paddingBottom: computed.paddingBottom,
+          borderTopWidth: computed.borderTopWidth,
+          borderBottomWidth: computed.borderBottomWidth,
+        };
+        const to = {
+          height: '0px',
+          opacity: 0,
+          transform: 'translateX(-24px)',
+          marginTop: '0px',
+          marginBottom: '0px',
+          paddingTop: '0px',
+          paddingBottom: '0px',
+          borderTopWidth: '0px',
+          borderBottomWidth: '0px',
+        };
+        const previousOverflow = node.style.overflow;
+        node.style.overflow = 'hidden';
+        let animation = null;
+        try {
+          animation = node.animate([from, to], {
+            duration: 300,
+            easing: 'cubic-bezier(.2,.8,.2,1)',
+            fill: 'forwards',
+          });
+        } catch (error) {
+          node.style.overflow = previousOverflow;
+          return null;
+        }
+        return () => {
+          if (animation) {
+            try {
+              animation.cancel();
+            } catch (error) {
+              /* already finished */
+            }
+          }
+          if (node.isConnected) node.style.overflow = previousOverflow;
+        };
+      };
+
+      const rowItemOf = (rowNode) => (rowNode && typeof rowNode.closest === 'function'
+        ? rowNode.closest('.dstl-item')
+        : null);
+
+      // The row itself slides left and fades on top of the box fold: a phase
+      // also collapses its section boxes, but a plain one-line task has no box,
+      // so the row motion is what makes its exit visible.
+      const fadeRetired = (rowNode) => {
+        if (!rowNode || !rowNode.isConnected || typeof rowNode.animate !== 'function') return null;
+        let animation = null;
+        try {
+          animation = rowNode.animate(
+            [
+              { opacity: 1, transform: 'translateX(0)' },
+              { opacity: 0, transform: 'translateX(-24px)' },
+            ],
+            { duration: 300, easing: 'cubic-bezier(.2,.8,.2,1)', fill: 'forwards' },
+          );
+        } catch (error) {
+          return null;
+        }
+        return () => {
+          if (animation) {
+            try {
+              animation.cancel();
+            } catch (error) {
+              /* already finished */
+            }
+          }
+        };
+      };
+
+      const retireThen = (id, status, optimistic, op, beforeCommit) => {
+        const finish = () => {
+          if (typeof beforeCommit === 'function') beforeCommit();
+        };
+        if (!sessionId || retiringRef.current.has(id) || prefersReducedMotion()) {
+          finish();
+          runOp(optimistic, op);
+          return;
+        }
+        const list = tasksRef.current;
+        const target = findTask(list, id);
+        if (!target) {
+          runOp(optimistic, op);
+          return;
+        }
+        // The optimistic tree says what actually leaves the live list: a card
+        // under a running phase leaves alone, the last card of a phase takes
+        // the whole phase with it.
+        const nextTree = optimistic(list);
+        const nextRows = buildList(nextTree, collapsedParents).rows;
+        const root = rootAncestor(list, id);
+        const rootStays = Boolean(root)
+          && nextRows.some((row) => row.task.id === root.id && (row.kind === 'head' || row.kind === 'row'));
+        const restores = [];
+        if (rootStays) {
+          const rowNode = cardRefs.current.get(id);
+          const fade = fadeRetired(rowNode);
+          if (fade) restores.push(fade);
+          const restore = collapseRetired(rowItemOf(rowNode));
+          if (restore) restores.push(restore);
+        } else if (root) {
+          const headNode = cardRefs.current.get(root.id);
+          const headFade = fadeRetired(headNode);
+          if (headFade) restores.push(headFade);
+          const headRestore = collapseRetired(rowItemOf(headNode));
+          if (headRestore) restores.push(headRestore);
+          const boxes = document.querySelectorAll('.dstl-section-box, .dstl-abandoned-kids');
+          for (const box of boxes) {
+            if (box.dataset.sectionOwner !== root.id) continue;
+            const restore = collapseRetired(box);
+            if (restore) restores.push(restore);
+          }
+        }
+        if (restores.length === 0) {
+          finish();
+          runOp(optimistic, op);
+          return;
+        }
+        retiringRef.current.add(id);
+        let restored = false;
+        const restoreAll = () => {
+          if (restored) return;
+          restored = true;
+          for (const restore of restores) restore();
+        };
+        window.setTimeout(() => {
+          retiringRef.current.delete(id);
+          finish();
+          runOp(optimistic, op, restoreAll, restoreAll);
+        }, 320);
+      };
 
       // Measuring the card boxes before a status change lets the card glide to
       // its new section instead of jumping. `runOp` takes the snapshot; this
@@ -1948,12 +2185,17 @@ window.__ModuleLoader__.load({
         }
         const index = STATUS_ORDER.indexOf(target.status);
         const next = STATUS_ORDER[(index + 1) % STATUS_ORDER.length];
-        runOp((previous) => cycleStatus(previous, id), { op: 'status', id, status: next });
+        const optimistic = (previous) => cycleStatus(previous, id);
+        if (next === 'completed' || next === 'abandoned') {
+          retireThen(id, next, optimistic, { op: 'status', id, status: next });
+          return;
+        }
+        runOp(optimistic, { op: 'status', id, status: next });
       };
       const abandon = (id) => {
         const target = findTask(tasksRef.current, id);
         if (!target || target.status === 'abandoned') return;
-        runOp((previous) => abandonTask(previous, id), { op: 'status', id, status: 'abandoned' });
+        retireThen(id, 'abandoned', (previous) => abandonTask(previous, id), { op: 'status', id, status: 'abandoned' });
       };
       // Restore writes the state the task had before it was written off; the
       // Host keeps the same value in `abandonedFrom`.
@@ -2032,8 +2274,9 @@ window.__ModuleLoader__.load({
         const task = findTask(tasksRef.current, id);
         const current = collapsedParents[id] !== undefined
           ? collapsedParents[id] === true
-          // A written-off parent starts open: it is not a finished phase.
-          : task !== null && task.status !== 'abandoned' && deriveStatus(task) === 'completed';
+          // A finished phase and a written-off root start folded (the same rule
+          // the dock rows use), so the first click opens instead of closing.
+          : defaultCollapsed(task);
         window.clearTimeout(collapseTimer.current);
         window.clearTimeout(expandTimer.current);
         if (current === true) {
@@ -2104,39 +2347,33 @@ window.__ModuleLoader__.load({
         runOp((previous) => toggleFocus(previous, id), { op: 'focus', id: target.focused === true ? null : id });
       };
       // Create flow: the header "+" makes a top-level task, a row's "+" makes a
-      // child of that row. The draft row renders at the top of the list, then the
-      // Host list replaces the optimistic node.
-      const startCreate = (parentId) => {
-        setCreating({ parentId: parentId || null });
-        setCreateDraft('');
-        setRenamingId(null);
-        setPendingDeleteId(null);
-      };
-      const cancelCreate = () => {
-        setCreating(null);
-        setCreateDraft('');
-      };
-      const commitCreate = () => {
-        if (!creating) return;
-        const title = createDraft.trim();
-        const parentId = creating.parentId;
-        cancelCreate();
-        if (title === '') return;
-        runOp(
-          (previous) => insertLocal(previous, {
-            id: 'draft-' + Date.now().toString(36),
-            title,
-            notes: '',
-            priority: 'medium',
-            status: 'pending',
-            blocked: false,
-            focused: false,
-            order: 1e9,
-            children: [],
-          }, parentId),
-          { op: 'create', input: { title, parentId } },
-        );
-        if (parentId) setCollapsedParents((previous) => ({ ...previous, [parentId]: false }));
+      // child of that row. The Host answers with the stored row (real id) and
+      // only then does it appear and drop straight into inline rename. The old
+      // temp-id row mounted twice (provisional → stored) and played the entrance
+      // animation twice, which read as a twitch.
+      const CREATE_TITLE = '新任务';
+      const createAndRename = (parentId) => {
+        if (!sessionId) return;
+        const before = tasksRef.current;
+        writingRef.current = true;
+        sendOp(sessionId, { op: 'create', input: { title: CREATE_TITLE, parentId } }).then((body) => {
+          snapshotRects();
+          setTasks(toTree(body.tasks));
+          lastSyncRef.current = stampOf(body);
+          setNotice('');
+          const beforeIds = new Set(collectTaskIds(before, []));
+          const created = collectTasks(body.tasks, []).find((task) => !beforeIds.has(task.id));
+          if (!created) return;
+          if (parentId) setCollapsedParents((previous) => ({ ...previous, [parentId]: false }));
+          setSelectedId(created.id);
+          setRenamingId(created.id);
+          setRenameDraft(CREATE_TITLE);
+          setPendingDeleteId(null);
+        }).catch((error) => {
+          setNotice(errorText(error));
+        }).finally(() => {
+          writingRef.current = false;
+        });
       };
 
       const startNotes = (id) => {
@@ -2162,27 +2399,265 @@ window.__ModuleLoader__.load({
         );
       };
 
-      // Drag-and-drop: the card follows the pointer, a status section under it
-      // highlights, and dropping rewrites the status. The card then glides into
-      // the new section through the same FLIP path as the ring click.
-      const finishDrag = () => {
+      // ---- drag: live reorder preview + status drop ----
+      // Releasing a card over another card in the same status band reorders
+      // the siblings; over the band's blank area it rewrites the status. Both
+      // paths share the FLIP snapshot so the rows glide instead of jumping.
+      const clearPreview = (animate) => {
+        dragSideRef.current = null;
+        if (!dragPreviewRef.current) return;
+        if (animate) snapshotRects();
+        dragPreviewRef.current = null;
+        setDragPreview(null);
+      };
+
+      // Cards reorder inside the same parent; crossing status bands is the same
+      // preview with the target band's status riding along, so the card visibly
+      // lands where the pointer is instead of the band lighting up.
+      const canReorder = (dragged, target) => {
+        if (!dragged || !target) return false;
+        const draggedTop = dragged.parentId === null || dragged.parentId === undefined;
+        const targetTop = target.parentId === null || target.parentId === undefined;
+        if (draggedTop !== targetTop) return false;
+        if (draggedTop) return true;
+        return dragged.parentId === target.parentId;
+      };
+
+      const applyPreview = (next) => {
+        const current = dragPreviewRef.current;
+        if (current
+          && current.id === next.id
+          && current.beforeId === next.beforeId
+          && current.status === next.status) return;
+        snapshotRects();
+        dragPreviewRef.current = next;
+        setDragPreview(next);
+      };
+
+      // The sibling that must come after `taskId`; null means "last".
+      const beforeIdAfter = (taskId) => {
+        const siblings = siblingsOf(tasksRef.current, taskId);
+        if (!siblings || siblings.length === 0) return null;
+        const index = siblings.findIndex((task) => task.id === taskId);
+        if (index < 0 || index + 1 >= siblings.length) return null;
+        return siblings[index + 1].id;
+      };
+
+      // Pointer-based drag: HTML5 drag-and-drop kept losing the drop event at
+      // the edges, so the whole gesture is driven by pointer events instead.
+      // The preview logic is shared; only the hit-testing source changed.
+      const previewFromPoint = (hit, point, draggedId) => {
+        if (!hit || typeof hit.closest !== 'function') return;
+        const dragged = findTask(tasksRef.current, draggedId);
+        if (!dragged) return;
+        const draggedTop = dragged.parentId === null || dragged.parentId === undefined;
+        const rowNode = hit.closest('[data-task-id]');
+        const box = hit.closest('[data-section-owner][data-section-status]');
+        if (rowNode) {
+          const targetId = rowNode.getAttribute('data-task-id');
+          if (!targetId || targetId === draggedId) return;
+          const target = findTask(tasksRef.current, targetId);
+          if (!target || !canReorder(dragged, target)) return;
+          const previous = dragSideRef.current && dragSideRef.current.key === targetId
+            ? dragSideRef.current.side
+            : null;
+          const rect = rowNode.getBoundingClientRect();
+          const side = dropSide(rect.top, rect.height, point.y, previous);
+          if (side === null) return;
+          dragSideRef.current = { key: targetId, side };
+          applyPreview({
+            id: draggedId,
+            status: draggedTop ? dragged.status : target.status,
+            beforeId: side === 'before' ? targetId : beforeIdAfter(targetId),
+          });
+          return;
+        }
+        if (box && !draggedTop) {
+          const ownerId = box.getAttribute('data-section-owner');
+          const status = box.getAttribute('data-section-status');
+          if (!status || !childOf(ownerId, draggedId)) return;
+          dragSideRef.current = null;
+          applyPreview({ id: draggedId, status, beforeId: null });
+        }
+      };
+
+      // A pointerdown on a live row starts tracking; the movement threshold
+      // tells a click from a drag. Move/up listen on window so a re-render (the
+      // preview moves the row) cannot orphan the gesture.
+      const startPointerDrag = (event, id) => {
+        if (event.button !== undefined && event.button !== 0) return;
+        if (pointerHandlersRef.current) return;
+        const target = event.target;
+        if (target && typeof target.closest === 'function'
+          && target.closest('input, textarea, select, [role="menuitem"], .dstl-menu, .dstl-notes-edit')) return;
+        const state = {
+          id,
+          pointerId: event.pointerId,
+          startX: event.clientX,
+          startY: event.clientY,
+          active: false,
+        };
+        const cleanup = () => {
+          window.removeEventListener('pointermove', onMove);
+          window.removeEventListener('pointerup', onUp);
+          window.removeEventListener('pointercancel', onCancel);
+          try {
+            document.body.style.userSelect = '';
+            document.body.style.cursor = '';
+          } catch (error) {
+            /* ignore */
+          }
+          pointerHandlersRef.current = null;
+        };
+        const onMove = (moveEvent) => {
+          if (moveEvent.pointerId !== state.pointerId) return;
+          if (!state.active) {
+            if (Math.abs(moveEvent.clientX - state.startX) < 4
+              && Math.abs(moveEvent.clientY - state.startY) < 4) return;
+            state.active = true;
+            dragTaskIdRef.current = state.id;
+            setDragTaskId(state.id);
+            setSelectedId(state.id);
+            dragPreviewRef.current = null;
+            dragSideRef.current = null;
+            setDragPreview(null);
+            try {
+              document.body.style.userSelect = 'none';
+              document.body.style.cursor = 'grabbing';
+            } catch (error) {
+              /* ignore */
+            }
+          }
+          const hit = typeof document.elementFromPoint === 'function'
+            ? document.elementFromPoint(moveEvent.clientX, moveEvent.clientY)
+            : null;
+          previewFromPoint(hit, { x: moveEvent.clientX, y: moveEvent.clientY }, state.id);
+          if (moveEvent.cancelable) moveEvent.preventDefault();
+        };
+        const onUp = (upEvent) => {
+          if (upEvent.pointerId !== state.pointerId) return;
+          cleanup();
+          if (!state.active) return;
+          // Releasing outside the panel cancels the drag instead of committing
+          // whatever the pointer passed last.
+          const panel = document.querySelector('.dstl-panel');
+          if (panel) {
+            const rect = panel.getBoundingClientRect();
+            const inside = upEvent.clientX >= rect.left && upEvent.clientX <= rect.right
+              && upEvent.clientY >= rect.top && upEvent.clientY <= rect.bottom;
+            if (!inside) {
+              finishDrag(true);
+              return;
+            }
+          }
+          const hit = typeof document.elementFromPoint === 'function'
+            ? document.elementFromPoint(upEvent.clientX, upEvent.clientY)
+            : null;
+          previewFromPoint(hit, { x: upEvent.clientX, y: upEvent.clientY }, state.id);
+          suppressNextClick();
+          const preview = dragPreviewRef.current;
+          if (preview) {
+            commitPreview(preview);
+            return;
+          }
+          finishDrag(true);
+        };
+        const onCancel = (cancelEvent) => {
+          if (cancelEvent.pointerId !== state.pointerId) return;
+          cleanup();
+          finishDrag(true);
+        };
+        pointerHandlersRef.current = { cleanup };
+        window.addEventListener('pointermove', onMove, { passive: false });
+        window.addEventListener('pointerup', onUp);
+        window.addEventListener('pointercancel', onCancel);
+      };
+
+      // A drag must not also fire the click of the row / ring / menu under the
+      // pointer: the first click right after the gesture is swallowed.
+      const suppressNextClick = () => {
+        const swallow = (clickEvent) => {
+          clickEvent.stopPropagation();
+          clickEvent.preventDefault();
+        };
+        document.addEventListener('click', swallow, true);
+        window.setTimeout(() => document.removeEventListener('click', swallow, true), 300);
+      };
+
+      // Drop the task where the preview shows it. A band change and the new
+      // sibling position travel in one write, so one render lands it.
+      const commitPreview = (preview) => {
+        // A drop and a dragend fallback can both reach here; the first one wins.
+        dragTaskIdRef.current = null;
+        const dragged = findTask(tasksRef.current, preview.id);
+        if (!dragged) {
+          finishDrag(false);
+          return;
+        }
+        // JSON drops `undefined` fields: normalise once so the Host always sees
+        // a `beforeId` and can tell the preview path from the arrow path.
+        const beforeId = preview.beforeId === undefined ? null : preview.beforeId;
+        const statusChanged = Boolean(preview.status) && dragged.status !== preview.status;
+        if (!statusChanged) {
+          // Same band: only a real position change writes anything.
+          if (beforeId === beforeIdAfter(preview.id)) {
+            finishDrag(false);
+            return;
+          }
+          runOp(
+            (previous) => reorderLocal(previous, preview.id, beforeId),
+            { op: 'move', id: preview.id, beforeId },
+          );
+          finishDrag(false);
+          return;
+        }
+        const status = preview.status;
+        const optimistic = (previous) => setTaskStatus(previous, preview.id, status);
+        // The pointer preview has already drawn the card inside its target
+        // band, so the drop lands it exactly where it belongs. When the parent
+        // phase survives, do not play the retire fold here: it animates that
+        // same node to height:0 with fill:forwards, and because the write lands
+        // on the reused node (unlike a ring click, which moves the card to
+        // another section box) the card would stay folded and look vanished.
+        // Only a drop that retires the whole phase needs the hand-over fold.
+        if (status === 'completed' || status === 'abandoned') {
+          const nextRows = buildList(optimistic(tasksRef.current), collapsedParents).rows;
+          const root = rootAncestor(tasksRef.current, preview.id);
+          const rootStays = Boolean(root)
+            && nextRows.some((row) => row.task.id === root.id && (row.kind === 'head' || row.kind === 'row'));
+          if (rootStays) {
+            runOp(optimistic, { op: 'status', id: preview.id, status });
+            finishDrag(false);
+            return;
+          }
+          retireThen(
+            preview.id,
+            status,
+            optimistic,
+            { op: 'status', id: preview.id, status },
+            () => finishDrag(false),
+          );
+          return;
+        }
+        runOp(
+          (previous) => reorderLocal(
+            setTaskStatus(previous, preview.id, status),
+            preview.id,
+            beforeId,
+          ),
+          { op: 'move', id: preview.id, beforeId, status },
+        );
+        finishDrag(false);
+      };
+
+      const finishDrag = (animate) => {
         dragTaskIdRef.current = null;
         setDragTaskId(null);
         if (dragLeaveTimer.current) {
           window.clearTimeout(dragLeaveTimer.current);
           dragLeaveTimer.current = 0;
         }
-        setDropTarget(null);
-      };
-
-      const onCardDragStart = (id) => {
-        dragTaskIdRef.current = id;
-        setDragTaskId(id);
-        setSelectedId(id);
-      };
-
-      const onCardDragEnd = () => {
-        finishDrag();
+        clearPreview(animate === true);
       };
 
       // A status section belongs to the parent task, so it accepts any of that
@@ -2192,44 +2667,18 @@ window.__ModuleLoader__.load({
         return Boolean(parent) && (parent.children || []).some((child) => child.id === childId);
       };
 
-      const onStatusDragOver = (event, parentId, status) => {
-        const draggedId = dragTaskIdRef.current;
-        if (!draggedId || !childOf(parentId, draggedId)) return;
-        event.preventDefault();
-        if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
-        if (dragLeaveTimer.current) {
-          window.clearTimeout(dragLeaveTimer.current);
-          dragLeaveTimer.current = 0;
-        }
-        setDropTarget((previous) => (
-          previous && previous.parentId === parentId && previous.status === status
-            ? previous
-            : { parentId, status }
-        ));
-      };
-
-      const onStatusDragLeave = (event, parentId, status) => {
-        if (!dropTarget || dropTarget.parentId !== parentId || dropTarget.status !== status) return;
-        if (dragLeaveTimer.current) window.clearTimeout(dragLeaveTimer.current);
-        dragLeaveTimer.current = window.setTimeout(() => {
-          dragLeaveTimer.current = 0;
-          setDropTarget(null);
-        }, 60);
-      };
-
-      const onStatusDrop = (event, parentId, status) => {
-        const draggedId = dragTaskIdRef.current;
-        if (!draggedId || !childOf(parentId, draggedId)) return;
-        event.preventDefault();
-        finishDrag();
-        const dragged = findTask(tasksRef.current, draggedId);
-        if (!dragged || dragged.status === status) return;
-        runOp((previous) => setTaskStatus(previous, draggedId, status), { op: 'status', id: draggedId, status });
-      };
-
-      // `abandoned` is the standing area's flat list; it is part of the keyboard
-      // order and the FLIP snapshots, so it rides along with `rows`.
-      const { rows, abandoned, completed } = buildList(tasks, collapsedParents);
+      // The reorder preview swaps only the sibling order; it is a pure render
+      // input and never touches the stored list until the drop lands. Crossing
+      // a band previews the status change too, so the card lands in the target
+      // band while dragging instead of the band flashing a highlight.
+      const previewedTask = dragPreview ? findTask(tasks, dragPreview.id) : null;
+      const previewTree = dragPreview && previewedTask && previewedTask.status !== dragPreview.status
+        ? setTaskStatus(tasks, dragPreview.id, dragPreview.status)
+        : tasks;
+      const displayTasks = dragPreview
+        ? reorderLocal(previewTree, dragPreview.id, dragPreview.beforeId)
+        : tasks;
+      const { rows, abandoned, completed } = buildList(displayTasks, collapsedParents, dragPreview ? dragPreview.id : null);
       const visibleRows = rows.filter((row) => row.kind !== 'status')
         .concat(abandoned.filter((row) => row.depth === 1
           || collapsedParents[row.task.parentId] !== true
@@ -2237,6 +2686,11 @@ window.__ModuleLoader__.load({
       const globalPaused = collectTasks(tasks, []).some((task) => task.paused === true && task.status !== 'completed');
 
       const onListKeyDown = (event) => {
+        const target = event.target;
+        // Keys typed in the rename / notes inputs bubble up to this container.
+        // Backspace there must erase a character, never delete the row, and
+        // Enter must commit the field without also cycling the status.
+        if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable === true)) return;
         if (selectedId === null) return;
         const index = visibleRows.findIndex((row) => row.task.id === selectedId);
         if (index < 0) return;
@@ -2309,9 +2763,6 @@ window.__ModuleLoader__.load({
             depth: row.depth,
             empty: row.count === 0,
             t,
-            onDragOver: (event) => onStatusDragOver(event, row.ownerId, row.status),
-            onDragLeave: (event) => onStatusDragLeave(event, row.ownerId, row.status),
-            onDrop: (event) => onStatusDrop(event, row.ownerId, row.status),
           });
         }
         // Abandoned and completed rows share the dock look (indent, no action
@@ -2329,12 +2780,13 @@ window.__ModuleLoader__.load({
           dockKind,
           childCount: row.childCount,
           hasChildren: row.hasChildren,
-          entering: (row.kind === 'abandoned' || row.kind === 'completed') && row.depth === 2
-            ? true
-            : entering.has(row.task.id),
-          // The status this card had last render, so a remount across section
-          // boxes can replay the ring animation instead of snapping in.
-          prevStatus: prevStatusRef.current.get(row.task.id),
+          // Docks never replay the ring animation: the exit fold already said
+          // what happened, and expanding the dock should just slide the rows
+          // in with the body instead of spinning every ring again.
+          entering: entering.has(row.task.id),
+          prevStatus: (row.kind === 'abandoned' || row.kind === 'completed')
+            ? undefined
+            : prevStatusRef.current.get(row.task.id),
           scopePaused: row.kind === 'head'
             ? collectTasks(row.task.children || [], []).some((child) => child.paused === true && child.status !== 'completed')
             : false,
@@ -2355,13 +2807,9 @@ window.__ModuleLoader__.load({
           canDown: canMove(tasks, row.task.id, 1),
           deletePending: pendingDeleteId === row.task.id,
           dragActive: dragTaskId === row.task.id,
-          onCardDragStart,
-          onCardDragEnd,
-          // A card is its own drop target for the section it sits in; dropping
-          // on the card means the same status the section row would accept.
-          onRowDragOver: variant === 'card' ? (event) => onStatusDragOver(event, row.ownerId, row.task.status) : undefined,
-          onRowDragLeave: variant === 'card' ? (event) => onStatusDragLeave(event, row.ownerId, row.task.status) : undefined,
-          onRowDrop: variant === 'card' ? (event) => onStatusDrop(event, row.ownerId, row.task.status) : undefined,
+          // Pressing a live row starts the pointer gesture; move/up are
+          // listened for on window so a preview re-render cannot orphan it.
+          onRowPointerDown: startPointerDrag,
           // Every row (head, top-level, card) registers its box: folding a phase
           // pushes the rows below it, and FLIP has to glide those too, not just
           // the cards.
@@ -2380,7 +2828,7 @@ window.__ModuleLoader__.load({
           onToggleBlocked,
           onToggleFocus,
           onStartNotes: startNotes,
-          onStartCreate: startCreate,
+          onStartCreate: createAndRename,
           menuOpen: menuOpenId === row.task.id,
           onToggleMenu: (id) => setMenuOpenId((previous) => (previous === id ? null : id)),
           onCloseMenu: () => setMenuOpenId(null),
@@ -2420,7 +2868,7 @@ window.__ModuleLoader__.load({
             return h('div', { key: 'dock-group:' + row.task.id, className: 'dstl-abandoned-group' },
               renderRow(row),
               folded ? null : h('div', {
-                className: 'dstl-abandoned-kids',
+                className: 'dstl-abandoned-kids' + (expandedSection === row.task.id ? ' dstl-item-in' : ''),
                 'data-section-owner': row.task.id,
               }, kids.map(renderRow)));
           });
@@ -2444,33 +2892,18 @@ window.__ModuleLoader__.load({
           next += 1;
         }
         index = next - 1;
-        const boxActive = dropTarget !== null
-          && dropTarget.parentId === row.ownerId
-          && dropTarget.status === row.status;
         // The section box is the thing that slides: the name row and every card
         // inside it ride along, so the background frame is never left behind.
         const boxAnim = expandedSection === row.ownerId ? ' dstl-item-in' : '';
         rowNodes.push(h('div', {
           key: 'box:' + row.ownerId + ':' + row.status,
           'data-section-owner': row.ownerId,
+          'data-section-status': row.status,
           className: 'dstl-section-box'
             + (row.count === 0 ? ' dstl-section-box-empty' : '')
-            + (boxActive ? ' dstl-section-box-drop' : '')
             + boxAnim,
         }, group));
       }
-
-      const createRow = creating ? h('div', { className: 'dstl-item dstl-create' },
-        h('div', { className: 'dstl-row dstl-row-create' },
-          h('span', { className: 'dstl-status-slot dstl-create-slot', 'aria-hidden': 'true' }, h(IconPlus, { size: 13 })),
-          h('div', { className: 'dstl-inline-form' },
-            h(InlineInput, {
-              value: createDraft,
-              placeholder: (creating.parentId ? t('panel.createSub') : t('panel.create')) + ' · ' + t('notice.createHint'),
-              onChange: setCreateDraft,
-              onCommit: commitCreate,
-              onCancel: cancelCreate,
-            })))) : null;
 
       const listBody = rowNodes.length === 0 && loaded
         ? h('div', { className: 'dstl-empty' },
@@ -2550,9 +2983,7 @@ window.__ModuleLoader__.load({
       // hint. It sits above the abandoned dock and only slides out when the
       // pointer is inside the bottom dock area; a click pins it open.
       const completedDock = h('div', {
-        className: 'dstl-complete-dock'
-          + (completedHover || completedOpen ? ' dstl-complete-revealed' : '')
-          + (completedOpen ? ' dstl-complete-open' : ''),
+        className: 'dstl-complete-dock' + (completedOpen ? ' dstl-complete-open' : ''),
       },
         h('div', {
           className: 'dstl-row dstl-row-head dstl-abandoned-head',
@@ -2668,7 +3099,7 @@ window.__ModuleLoader__.load({
             title: heroMode ? t('notice.noSession') : t('panel.create'),
             'aria-label': heroMode ? t('notice.noSession') : t('panel.create'),
             disabled: heroMode || undefined,
-            onClick: () => startCreate(null),
+            onClick: () => createAndRename(null),
           }, h(IconPlus, { size: 14 }))),
         h('div', {
           className: 'dstl-list',
@@ -2676,7 +3107,7 @@ window.__ModuleLoader__.load({
           tabIndex: 0,
           ref: listRef,
           onKeyDown: onListKeyDown,
-        }, createRow, listBody),
+        }, listBody),
         docks,
         h('footer', { className: 'dstl-foot' },
           h('span', {
