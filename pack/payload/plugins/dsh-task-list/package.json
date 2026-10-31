@@ -1,6 +1,6 @@
 {
   "name": "@local/dsh-task-list",
-  "version": "0.3.8",
+  "version": "0.3.11",
   "private": true,
   "type": "module",
   "description": "Task list panel docked to the left of the conversation column, backed by a per-session JSON store shared with the agent.",
