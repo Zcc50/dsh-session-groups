@@ -14,6 +14,7 @@ import {
   importLegacyTodos,
   nextOrder,
   moveSibling,
+  moveBefore,
   removeSubtree,
   setFocus,
   setPaused,
@@ -481,6 +482,44 @@ test('moveSibling normalises duplicate orders before swapping', () => {
   const byId = new Map(moved.map((task) => [task.id, task]));
   assert.equal(byId.get('b').order, 0);
   assert.equal(byId.get('a').order, 1);
+});
+
+test('moveBefore places a task in front of the target sibling', () => {
+  const options = makeOptions();
+  const first = createTask({ id: 'a', title: 'a', order: 0 }, options);
+  const second = createTask({ id: 'b', title: 'b', order: 1 }, options);
+  const third = createTask({ id: 'c', title: 'c', order: 2 }, options);
+  const list = [first, second, third];
+  const orderOf = (tasks) => new Map(tasks.map((task) => [task.id, task.order]));
+
+  const head = moveBefore(list, 'c', 'a', { now: NOW + 1 });
+  assert.equal(orderOf(head).get('c'), 0);
+  assert.equal(orderOf(head).get('a'), 1);
+  assert.equal(orderOf(head).get('b'), 2);
+
+  const tail = moveBefore(list, 'a', null, { now: NOW + 2 });
+  assert.equal(orderOf(tail).get('b'), 0);
+  assert.equal(orderOf(tail).get('c'), 1);
+  assert.equal(orderOf(tail).get('a'), 2);
+
+  // Already in front of b: no write, the same list comes back.
+  assert.equal(moveBefore(list, 'a', 'b', options), list);
+  assert.equal(moveBefore(list, 'c', null, options), list);
+  assert.throws(() => moveBefore(list, 'a', 'gone', options), /not a sibling/);
+  assert.throws(() => moveBefore(list, 'gone', null, options), /unknown task id/);
+});
+
+test('moveBefore keeps sibling groups apart and normalises sparse orders', () => {
+  const options = makeOptions();
+  const parent = createTask({ id: 'p', title: 'p', order: 0 }, options);
+  const a = createTask({ id: 'a', title: 'a', parentId: 'p', order: 5 }, options);
+  const b = createTask({ id: 'b', title: 'b', parentId: 'p', order: 9 }, options);
+  const moved = moveBefore([parent, a, b], 'b', 'a', { now: NOW + 1 });
+  const byId = new Map(moved.map((task) => [task.id, task]));
+  assert.equal(byId.get('b').order, 0);
+  assert.equal(byId.get('a').order, 1);
+  assert.equal(byId.get('p').order, 0);
+  assert.throws(() => moveBefore([parent, a, b], 'a', 'p', options), /not a sibling/);
 });
 
 test('removeSubtree removes the task and every descendant', () => {
