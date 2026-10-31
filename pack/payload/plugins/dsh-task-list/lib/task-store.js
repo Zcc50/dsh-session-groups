@@ -438,6 +438,40 @@ export function moveSibling(tasks, id, direction, options) {
 }
 
 /**
+ * Move one task in front of `beforeId` among its siblings (`beforeId` null =
+ * last). Siblings are renumbered from their current visual order first, so
+ * duplicate or sparse `order` values cannot stall the move. The drag preview
+ * writes this same ordering locally, so the drop commits exactly what the user
+ * saw. Throws when `beforeId` names a task outside that sibling group.
+ */
+export function moveBefore(tasks, id, beforeId, options) {
+  const now = resolveTime((options || {}).now, Date.now());
+  const target = tasks.find((task) => task.id === id);
+  if (!target) throw new Error('unknown task id: ' + id);
+  const siblings = tasks.filter((task) => task.parentId === target.parentId).sort(compareOrder);
+  const from = siblings.findIndex((task) => task.id === id);
+  if (from < 0) return tasks;
+  const before = beforeId === null || beforeId === undefined ? null : String(beforeId);
+  if (before === id) return tasks;
+  const rest = siblings.filter((task) => task.id !== id);
+  let insertAt = rest.length;
+  if (before !== null) {
+    insertAt = rest.findIndex((task) => task.id === before);
+    if (insertAt < 0) throw new Error('not a sibling: ' + before);
+  }
+  if (insertAt === from) return tasks;
+  const reordered = rest.slice();
+  reordered.splice(insertAt, 0, target);
+  const orderById = new Map(reordered.map((task, position) => [task.id, position]));
+  return tasks.map((task) => {
+    if (!orderById.has(task.id)) return task;
+    const order = orderById.get(task.id);
+    if (order === task.order) return task;
+    return { ...task, order, version: task.version + 1, updatedAt: now, externalUpdateAt: null };
+  });
+}
+
+/**
  * Remove one task and every descendant (hard delete, no recycle bin).
  * Returns the surviving list plus the exact ids that disappeared.
  */
