@@ -15,6 +15,9 @@
  * I/O, routing, and the agent-facing surface.
  */
 import { readTaskState, writeTaskState } from './lib/task-file.js';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import {
   STATUSES,
   PRIORITIES,
@@ -27,6 +30,7 @@ import {
   insertTask,
   nextOrder,
   moveSibling,
+  moveBefore,
   removeSubtree,
   mergeAgent,
   deriveStatus,
@@ -343,9 +347,23 @@ function applyOp(sessionId, body) {
     case 'focus':
       next = setFocus(tasks, id === null ? null : requireId(id, 'id'), { now });
       break;
-    case 'move':
-      next = moveSibling(tasks, requireId(id, 'id'), body.direction === 'up' ? -1 : 1, { now });
+    case 'move': {
+      // `beforeId` comes from the drag-reorder preview (null = last sibling);
+      // the arrow buttons keep the older direction contract. A drag across
+      // status bands carries the new status in the same write, and the status
+      // is applied before either branch so it can never be dropped.
+      const moveId = requireId(id, 'id');
+      let base = tasks;
+      if (body.status !== undefined) {
+        base = setStatus(base, moveId, requireId(body.status, 'status'), { now });
+      }
+      if (body.beforeId !== undefined) {
+        next = moveBefore(base, moveId, body.beforeId === null ? null : requireId(body.beforeId, 'beforeId'), { now });
+      } else {
+        next = moveSibling(base, moveId, body.direction === 'up' ? -1 : 1, { now });
+      }
       break;
+    }
     case 'pause': {
       const scope = body.scope === 'subtree' ? 'subtree' : 'all';
       const parentId = scope === 'subtree' ? requireId(id, 'id') : null;
@@ -389,6 +407,15 @@ async function handleTasks(ctx, req, res) {
     if (!sameOrigin(req)) return sendJson(res, 403, { ok: false, error: 'cross-origin write refused' });
     const body = await readJson(req);
     const sessionId = requireId(body.sessionId, 'sessionId');
+    // TEMP diagnostic: every panel write lands here so a drag that goes nowhere
+    // can be told apart from a write that carries the wrong fields.
+    try {
+      const logFile = path.join(os.homedir(), '.dsh', 'temp', 'task-list-ops.log');
+      fs.mkdirSync(path.dirname(logFile), { recursive: true });
+      fs.appendFileSync(logFile, new Date().toISOString() + ' ' + JSON.stringify(body) + '\n');
+    } catch (error) {
+      /* diagnostics must never break the write */
+    }
     const result = applyOp(sessionId, body);
     return sendJson(res, 200, { ok: true, tasks: result.tasks, removed: result.removed, updatedAt: result.updatedAt });
   } catch (error) {
