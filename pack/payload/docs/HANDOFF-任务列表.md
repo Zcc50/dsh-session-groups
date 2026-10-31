@@ -805,3 +805,15 @@ plugin_manager list_plugins → include:tool-todo enabled:false
 - 验证：`node --check` 通过；`F:\DSH\temp\dstl-arrow-check.mjs` 15 项全过；`node --test lib/task-store.test.js` 49/49。
 - 生效：link 安装，刷新页面即可（Host 未改，无需重载插件）。
 
+
+## 29. 修复：拖拽子任务进「完成」节后卡片消失（2026-10-31，v0.3.11）
+
+- **现象**：子任务卡片拖进父任务的「完成」节后从面板消失，同父下其他子任务正常。
+- **根因**：拖拽预览已把卡片渲染进完成节；drop 时 `commitPreview` 走 `retireThen` 播放退出折叠（`.dstl-item` 的高度/透明度动画，`fill: 'forwards'`）。状态写入落地后卡片仍在同一完成节、React 复用同一个 DOM 节点（点环路径会换节重挂载，所以只在这个路径发作），折叠动画的 fill-forwards 效果继续生效 → 卡片保持 `height:0` / `opacity:0`。另外 `retireThen` 把恢复回调传给了 `runOp` 的**第三参数**（实为 `onError`），成功路径永远不恢复。
+- **修法**（全在 `client.js`）：
+  1. `commitPreview` 的 `completed` / `abandoned` 分支先算 `rootStays`（根父任务是否仍留在列表）；仍在则直接 `runOp` 写状态 + 清预览，不播退出折叠——卡片就停在预览所在的落点。
+  2. `runOp` 新增第 4 个参数 `onDone`（Host 整表采纳后调用）；`retireThen` 的恢复回调改为幂等 `restoreAll`，成功 / 失败都执行，防止任何复用节点被 fill-forwards 锁死。
+- **验证**：`node --check client.js` 通过；`node --test lib/task-store.test.js` → **51 passed / 0 failed**（本轮未改数据层）；用户刷新页面后实测拖拽进完成节正常、**验收通过**。
+- **生效**：link 安装，源文件即运行文件，刷新页面即可（未改 Host 半）。
+- 版本：0.3.10 → **0.3.11**。
+
