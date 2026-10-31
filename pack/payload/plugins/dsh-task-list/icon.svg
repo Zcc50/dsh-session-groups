@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Task List">
+  <rect width="64" height="64" rx="14" fill="#2F6F6A"/>
+  <g fill="none" stroke="#F2FBFA" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M16 22.5l4 4 7-8"/>
+    <path d="M16 41.5l4 4 7-8"/>
+    <line x1="34" y1="23" x2="49" y2="23"/>
+    <line x1="34" y1="42" x2="49" y2="42"/>
+  </g>
+</svg>

@@ -1,27 +1,9 @@
 {
   "name": "dsh-workspace-frontend",
-  "version": "0.1.0",
-  "description": "Workspace frontend rebuild for DeepSeek Harness: session groups, drag assignment, sidebar polish and resize handles.",
-  "license": "MIT",
-  "author": "Zcc50",
+  "version": "0.1.1",
   "type": "module",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/Zcc50/dsh-workspace-frontend.git"
-  },
-  "homepage": "https://github.com/Zcc50/dsh-workspace-frontend",
-  "bugs": {
-    "url": "https://github.com/Zcc50/dsh-workspace-frontend/issues"
-  },
-  "keywords": [
-    "dsh-plugin",
-    "deepseek-harness",
-    "session",
-    "workspace",
-    "groups",
-    "sidebar",
-    "frontend"
-  ],
+  "description": "DSH 重修整合包：根目录是工作区美化插件本体，pack/ 子目录是整套环境安装器（任务列表 / 编码 / LSP / 视觉 / 白皮书）。",
+  "license": "MIT",
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",
@@ -35,10 +17,15 @@
     "locale/*.json",
     "icon.svg"
   ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Zcc50/dsh-rebuild.git"
+  },
+  "homepage": "https://github.com/Zcc50/dsh-rebuild",
+  "bugs": { "url": "https://github.com/Zcc50/dsh-rebuild/issues" },
+  "keywords": ["deepseek-harness", "dsh-plugin", "session-groups", "sidebar", "workspace", "rebuild"],
   "dsh": {
-    "bundle": {
-      "patch": "./cordis.patch.yml"
-    },
+    "bundle": { "patch": "./cordis.patch.yml" },
     "client": {
       "platform": "web",
       "immediately": true,

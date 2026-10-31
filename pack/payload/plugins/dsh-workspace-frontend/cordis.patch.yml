@@ -1,0 +1,5 @@
+# Bundle patch: inserts the Client-only Workspace Frontend plugin row.
+- insert:
+    - id: workspace-frontend
+      name: '@local/dsh-workspace-frontend'
+      config: {}

@@ -1,0 +1,3 @@
+- insert:
+    - id: task-list
+      name: '@local/dsh-task-list'

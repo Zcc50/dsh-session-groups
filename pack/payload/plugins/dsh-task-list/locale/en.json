@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Task List",
+    "description": "A persistent task panel left of the conversation: four states, subtasks, priority and notes, stored per session and shared with the agent."
+  }
+}

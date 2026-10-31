@@ -1,0 +1,6 @@
+# dsh-vision bundle patch: one row inserts the dual-face plugin
+# (host half: analyze_image / screenshot tools + /api/vision-paste route;
+#  browser half: paste/drag/button entry via package.json `dsh.client`).
+- insert:
+    - id: dsh-vision
+      name: 'dsh-vision'

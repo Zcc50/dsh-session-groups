@@ -1,66 +1,47 @@
-# Workspace Frontend for DeepSeek Harness
+# DSH 重修整合包（dsh-rebuild）
 
-Rebuilds the left sidebar of DeepSeek Harness into a grouped **workspace → group → session** browser, and repaints every session row.
+> 一个仓库，两条入口：
+> - **根目录** = 工作区美化插件本体（`dsh-workspace-frontend` 0.1.1），可以从插件市场一键安装 / 更新；
+> - **`pack/`** = 整套 DSH 环境安装器（任务列表 + 编码兼容 + LSP/审查 + 视觉 + 白皮书），按 `pack/安装指令.md` 让 DSH 里的 agent 逐项用问答卡片确认安装。
 
-DeepSeek Harness / 工作区美化：把左侧栏重做成「工作区 → 分组 → 会话」，并让会话行显示状态、上下文与花费。
+## 入口一：只要工作区美化（市场一键装）
 
-## Features
+在市场里搜「DSH 重修整合包」，或直接对本仓库执行：
 
-### Grouped sidebar
-
-- The plugin shadows the shipped `sidebar.workspaces` (`priority: -1`) with its own browser: workspaces, then user-defined groups, then sessions. Sessions in no group stay in an **Ungrouped** section at the end of each workspace; sessions in no workspace at all appear in a **No workspace** section.
-- Group actions, revealed on hover: new session, move up, move down, change colour (8-colour palette), rename (inline), delete (two-click confirm).
-- **A session started from a group's `+` lands in that group**; a collapsed group is expanded first.
-- Sessions drag between groups and across workspaces. Same-workspace drops rewrite the group assignment; cross-workspace drops are recorded as a display-level move (Host workspace membership is untouched).
-- Manual order: `↑`/`↓` on a group reorders groups, `↑`/`↓` on a session reorders it inside its group. A group ordered by hand stops auto-sorting by time.
-- Workspace actions: add workspace (native directory picker), delete workspace (two-click confirm). Deletion removes the Host registration only — sessions and files stay on disk, their rows fall into **No workspace**.
-
-### Session rows
-
-- Whole-row click opens the session.
-- Leading ring: blue = a question awaits you, yellow = approval / plan review pending, green = finished while unread. Colour changes play a 1 s exit plus 1 s enter sweep.
-- Context ring: green → red gradient by context usage, spins while the session runs; warns once at 20 % and again at 40 %.
-- Clock icon when the session has an active scheduled task.
-- Per-session cost and relative last-activity time; group and workspace headers show sums.
-- Row menu: open, rename, move to group…, archive / unarchive, copy session ID.
-
-### Layout
-
-Resize handles on both sidebar boundaries (a thin line plus a rounded pull tab); drag to resize. Limits come from the Host: left 264–420 px, right up to 70 % of the viewport.
-
-## Install
-
-Client-only plugin bundle — no dependencies, no build step.
-
-```sh
-# point the harness plugin manager at this directory
-plugin_manager install_bundle  target: <absolute path to this directory>
+```
+plugin_manager -> install_bundle -> target: <本仓库目录>
 ```
 
-Then refresh the page (`Ctrl+R`). The sidebar is rebuilt immediately and the **Workspace** entry appears in the sidebar icon column.
+安装后侧栏变成「工作区 → 分组 → 会话」，支持拖拽归组、上下文用量环、20%/40% 上下文提醒、左右侧栏调宽。
 
-Group data is local to the browser: `localStorage['dsh.session-groups.v1']` (`sections`, `assignments`, `moves`, `orders`). Nothing is written to the session log.
+## 入口二：整套环境（pack/ 安装器）
 
-## Compatibility
+1. 下载本仓库（`Code → Download ZIP`）。
+2. 解压后进入 `pack/`。
+3. 在 DSH 任意会话里发：
 
-Built and verified against DeepSeek Harness 0.2.1-rc.3.
+   > 按 `<解压目录>/pack/安装指令.md` 安装重修整合包。
 
-Extension points used:
+agent 会逐项出问答卡片（工作区美化 / 任务列表 / 编码 / LSP / 视觉 / 皮肤 / 白皮书），你确认或修改后一条命令装完。
 
-- Slots: `sidebar.workspaces` (shadowed, `priority: -1`), `sidebar.panellist`, `main`, `sidebar.workspaces.session.menu.item`, `sidebar.session.row.leading`, `sidebar.session.row.hover`, `shell.overlay`
-- Hooks: `useWorkspaces`, `useSessions`, `useSessionStatus` (`pendingInteraction.kind`, `completionUnread`), `usePanelInfo`
-- Services: `uiWorkspace` (`openSession`, `openWorkspace` + `beforeOpen`, `startSession`, `archiveSession`, `unarchiveSession`, `pickDirectory`), `workspaces.create` / `.delete`, `sessions.using` / `.refreshProjections`, `layout.selectPanel`, `remote.schedule.catalog`
-- Theme: `--dsw-alias-*` tokens only, each with a fallback colour. Skins that style the shipped browser by DOM class do not reach this list; token-level theming does.
+`pack/` 里包含：
 
-Session cost is read from `GET /dsh-claude-style/session-cost?id=<sessionId>`, provided by the `dsh-claude-style` skin (`cny` in units of 1e-6 yuan). Without that skin the cost column shows `—`.
+| 项目 | 内容 |
+|---|---|
+| `payload/plugins/` | 工作区美化 0.1.1、任务列表 0.3.8、视觉 0.1.0 源码 |
+| `payload/vendor/` | 编码插件、LSP 动作、审查技能、TypeScript 5.9.3、语言服务器、皮肤（离线 tgz） |
+| `payload/profile/` | 按 id 合并进 `cordis.patch.yml` 的配置片段 |
+| `payload/AGENTS.md` | 操作白皮书 2026-10-31 |
+| `install.ps1` | 逐项安装脚本（`-Include` / `-AgentsPolicy` / `-DryRun`） |
+| `README-安装说明.md` | 人类可读的安装说明与验证清单 |
 
-## Limitations
+`pack/SHA256SUMS.txt` 是相对 `pack/` 目录的哈希清单，校验时进入 `pack/` 再跑。
 
-- Session order is plugin-local; the Host's own list order is never rewritten.
-- No content search in the browser, no workspace nesting, no drag reordering of groups (use `↑`/`↓`).
-- The shipped row menu and hover card are not reused; this plugin renders its own.
-- **No workspace** may also list subagent sessions if the Host reports them in the session snapshot.
+## 版本
 
-## License
+- **0.1.1**（2026-10-31）：整合包化。根目录仍是可市场安装的工作区美化插件；新增 `pack/` 全量安装器（任务列表 0.3.8、编码、LSP/审查、视觉、白皮书）。
+- 0.1.0（2026-10-29）：工作区美化首次发布。
+
+## 许可
 
 MIT

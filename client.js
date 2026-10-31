@@ -29,6 +29,7 @@ window.__ModuleLoader__.load({
     }
     const useState = React.useState;
     const useEffect = React.useEffect;
+    const useLayoutEffect = React.useLayoutEffect;
     const useMemo = React.useMemo;
     const useRef = React.useRef;
 
@@ -120,6 +121,7 @@ window.__ModuleLoader__.load({
       'ctx.alert20.body': '已达 20% 提醒线。继续工作即可，到 40% 会提醒先收尾、再换会话。',
       'ctx.alert40.title': '上下文已用 {percent}%，准备换会话',
       'ctx.alert40.body': '先把当前工作收尾，我会补齐项目 HANDOFF；随后开一个新会话继续。',
+      'browser.balance': '剩余账户余额',
     };
 
     const en = {
@@ -198,6 +200,7 @@ window.__ModuleLoader__.load({
       'ctx.alert20.body': '20% reached. Keep working; at 40% you will be asked to wrap up and restart.',
       'ctx.alert40.title': 'Context {percent}% used - switch sessions soon',
       'ctx.alert40.body': 'Finish the current task first; the project HANDOFF gets updated, then start a new session.',
+      'browser.balance': 'Remaining account balance',
     };
 
     // ------------------------------------------------------------------
@@ -218,6 +221,18 @@ window.__ModuleLoader__.load({
         return Number.isFinite(parsed) ? parsed : 0;
       }
       return 0;
+    }
+
+    // Session rows are only ~22px tall: a 1–2px wobble across the middle used to
+    // flip the live preview back and forth (the "twitching" report). Keep the
+    // previous side until the pointer is clearly past the middle; null means
+    // "hold the current preview".
+    function sessionDropSide(rectTop, height, clientY, previousSide) {
+      if (!Number.isFinite(rectTop) || !Number.isFinite(height) || height <= 0) return 'before';
+      const dy = clientY - (rectTop + height / 2);
+      const threshold = Math.min(6, height * 0.3);
+      if (previousSide && Math.abs(dy) < threshold) return null;
+      return dy < 0 ? 'before' : 'after';
     }
 
     /** Mirror the shipped browser: the stored default title renders localized. */
@@ -476,6 +491,24 @@ window.__ModuleLoader__.load({
       });
     }
 
+    // Drag-reorder one group: place it before `beforeSectionId` (omit = last).
+    // The sidebar group headers use this; the panel's ↑↓ cards keep calling
+    // `moveSection`, which swaps with a neighbour.
+    function moveSectionBefore(wsId, sectionId, beforeSectionId) {
+      updateBucket(wsId, (bucket) => {
+        const from = bucket.sections.findIndex((section) => section.id === sectionId);
+        if (from < 0) return bucket;
+        const next = bucket.sections.slice();
+        const moved = next.splice(from, 1)[0];
+        let at = beforeSectionId ? next.findIndex((section) => section.id === beforeSectionId) : next.length;
+        if (at < 0) at = next.length;
+        next.splice(at, 0, moved);
+        const same = next.length === bucket.sections.length
+          && next.every((section, index) => section.id === bucket.sections[index].id);
+        return same ? bucket : { sections: next, assignments: bucket.assignments };
+      });
+    }
+
     // Manual row order inside one group. The ungrouped bucket uses the '' key.
     function setGroupOrder(wsId, sectionKey, ids) {
       const state = getState();
@@ -484,6 +517,60 @@ window.__ModuleLoader__.load({
       wsOrders[sectionKey] = ids.slice();
       orders[wsId] = wsOrders;
       commit(Object.assign({}, state, { orders }));
+    }
+
+    // Drop a Session into a group at the exact position the pointer marked.
+    // Same-workspace moves write `assignments`; cross-workspace moves write the
+    // display-only `moves` overlay (the Host keeps the original ownership).
+    // `targetIds` is the group's on-screen order, so inserting the moved id into
+    // it reproduces what the user saw while dragging. One commit keeps the new
+    // ownership and the new manual order from rendering in two steps.
+    function placeSessionIn(workspaceId, sectionId, sessionId, targetIds, beforeId, crossWorkspace) {
+      if (!workspaceId || !sessionId) return;
+      const sectionKey = sectionId || '';
+      const state = getState();
+      const bucket = bucketOf(state, workspaceId);
+      const nextIds = (Array.isArray(targetIds) ? targetIds : []).filter((id) => id !== sessionId);
+      let at = beforeId ? nextIds.indexOf(beforeId) : -1;
+      if (at < 0) at = nextIds.length;
+      nextIds.splice(at, 0, sessionId);
+
+      const assignments = Object.assign({}, bucket.assignments);
+      if (crossWorkspace || !sectionId) delete assignments[sessionId];
+      else assignments[sessionId] = sectionId;
+      const byWorkspace = Object.assign({}, state.byWorkspace);
+      byWorkspace[workspaceId] = { sections: bucket.sections, assignments };
+
+      let moves = state.moves || {};
+      if (crossWorkspace) {
+        moves = Object.assign({}, moves);
+        moves[sessionId] = { workspaceId, sectionId: sectionKey };
+      } else if (Object.prototype.hasOwnProperty.call(moves, sessionId)) {
+        moves = Object.assign({}, moves);
+        delete moves[sessionId];
+      }
+
+      // Drop the moved id from every other manual list (any workspace / group).
+      const orders = Object.assign({}, state.orders);
+      for (const wid of Object.keys(orders)) {
+        const wsOrders = Object.assign({}, orders[wid]);
+        let changed = false;
+        for (const key of Object.keys(wsOrders)) {
+          if (wid === workspaceId && key === sectionKey) continue;
+          const list = wsOrders[key];
+          if (!Array.isArray(list) || list.indexOf(sessionId) < 0) continue;
+          wsOrders[key] = list.filter((id) => id !== sessionId);
+          changed = true;
+        }
+        if (changed) orders[wid] = wsOrders;
+      }
+      const targetOrders = Object.assign({}, orders[workspaceId] || {});
+      targetOrders[sectionKey] = nextIds;
+      orders[workspaceId] = targetOrders;
+
+      const next = Object.assign({}, state, { byWorkspace, orders });
+      if (moves !== state.moves) next.moves = moves;
+      commit(next);
     }
 
     function sortByOrder(rows, ids) {
@@ -569,27 +656,6 @@ window.__ModuleLoader__.load({
       commit(next);
     }
 
-    function setSessionMove(sessionId, workspaceId, sectionId) {
-      if (!sessionId || !workspaceId) return;
-      const state = getState();
-      const moves = Object.assign({}, state.moves);
-      moves[sessionId] = { workspaceId, sectionId: sectionId || '' };
-      const orders = Object.assign({}, state.orders);
-      const wsOrders = reorderListForMove(orders[workspaceId] || {}, sectionId || '', sessionId);
-      if (wsOrders) orders[workspaceId] = wsOrders;
-      const next = Object.assign({}, state, { moves });
-      if (wsOrders) next.orders = orders;
-      commit(next);
-    }
-
-    function clearSessionMove(sessionId) {
-      const state = getState();
-      if (!Object.prototype.hasOwnProperty.call(state.moves, sessionId)) return;
-      const moves = Object.assign({}, state.moves);
-      delete moves[sessionId];
-      commit(Object.assign({}, state, { moves }));
-    }
-
     // ------------------------------------------------------------------
     // move-dialog request store
     // ------------------------------------------------------------------
@@ -630,45 +696,6 @@ window.__ModuleLoader__.load({
     }
 
     // ------------------------------------------------------------------
-    // rename-dialog request store
-    // ------------------------------------------------------------------
-    let renameRequest = null;
-    const renameListeners = new Set();
-
-    function getRenameRequest() {
-      return renameRequest;
-    }
-
-    function subscribeRename(listener) {
-      renameListeners.add(listener);
-      return function unsubscribe() {
-        renameListeners.delete(listener);
-      };
-    }
-
-    function emitRename() {
-      const snapshot = Array.from(renameListeners);
-      for (const listener of snapshot) {
-        try {
-          listener();
-        } catch (error) {
-          // Ignore one broken subscriber.
-        }
-      }
-    }
-
-    function openRenameDialog(payload) {
-      renameRequest = { sessionId: payload.sessionId, title: payload.title || '' };
-      emitRename();
-    }
-
-    function closeRenameDialog() {
-      if (renameRequest === null) return;
-      renameRequest = null;
-      emitRename();
-    }
-
-    // ------------------------------------------------------------------
     // store hooks
     // ------------------------------------------------------------------
     const useSyncStore = typeof React.useSyncExternalStore === 'function'
@@ -686,10 +713,6 @@ window.__ModuleLoader__.load({
 
     function useMoveRequest() {
       return useSyncStore(subscribeOverlay, getOverlayRequest);
-    }
-
-    function useRenameRequest() {
-      return useSyncStore(subscribeRename, getRenameRequest);
     }
 
     // Safe fallbacks when a standard root hook is unavailable.
@@ -989,6 +1012,22 @@ window.__ModuleLoader__.load({
     // ------------------------------------------------------------------
     // shared inline pieces
     // ------------------------------------------------------------------
+    // A header row toggles its branch from anywhere on the row. The ring stays
+    // the labelled control, but a click on the title, the count or empty tail
+    // space should fold the branch too. Buttons / inputs keep their own meaning,
+    // and dragging a text selection over the title must not fold it.
+    function headerToggleClick(event, toggle) {
+      const target = event.target;
+      if (target && typeof target.closest === 'function' && target.closest('button, input, textarea, select, a, [role="menuitem"]')) return;
+      try {
+        const selection = window.getSelection ? window.getSelection() : null;
+        if (selection && selection.isCollapsed === false && selection.anchorNode && event.currentTarget && event.currentTarget.contains(selection.anchorNode)) return;
+      } catch (error) {
+        // Selection access can throw in restricted contexts; the toggle still runs.
+      }
+      toggle();
+    }
+
     function InlineInput(props) {
       const inputRef = useRef(null);
       useEffect(() => {
@@ -998,10 +1037,12 @@ window.__ModuleLoader__.load({
       }, []);
       return h('input', {
         ref: inputRef,
-        className: 'dssx-input',
+        className: props.invalid === true ? 'dssx-input dssx-input-invalid' : 'dssx-input',
         type: 'text',
         value: props.value,
         placeholder: props.placeholder,
+        title: typeof props.title === 'string' ? props.title : undefined,
+        'aria-invalid': props.invalid === true ? 'true' : undefined,
         onChange: (event) => props.onChange(event.target.value),
         onKeyDown: (event) => {
           if (event.key === 'Enter') {
@@ -1068,6 +1109,29 @@ window.__ModuleLoader__.load({
       if (typeof cny !== 'number' || !isFinite(cny) || cny < 0) return '—';
       const parts = (cny / 1e6).toFixed(2).split('.');
       return '¥' + parts[0].padStart(2, '0') + '.' + parts[1];
+    }
+
+    /**
+     * Account wallet balance shown in the workspace toolbar. The Host account
+     * service answers with decimal strings; this mirrors the settings page's
+     * two-decimal / sub-cent rules (`<¥0.01`) while keeping grouped digits.
+     */
+    function formatAccountBalance(wallet) {
+      if (!wallet || typeof wallet.balance !== 'string') return '—';
+      const value = Number(wallet.balance);
+      if (!isFinite(value)) return '—';
+      const symbol = wallet.currency === 'USD' ? '$' : '¥';
+      const fixed = (amount) => {
+        const [integer, fraction] = amount.toFixed(2).split('.');
+        return integer.replace(/\B(?=(\d{3})+(?!\d))/g, ',') + '.' + fraction;
+      };
+      if (value === 0) return symbol + '0.00';
+      if (value < 0) {
+        const abs = Math.abs(value);
+        return '-' + symbol + (abs < 0.01 ? '0.01' : fixed(abs));
+      }
+      if (value < 0.01) return '<' + symbol + '0.01';
+      return symbol + fixed(value);
     }
 
     /**
@@ -1667,96 +1731,6 @@ window.__ModuleLoader__.load({
     }
 
     // ------------------------------------------------------------------
-    // rename-session dialog
-    // ------------------------------------------------------------------
-    function RenameSessionDialog(props) {
-      const t = props.t;
-      const request = useRenameRequest();
-      const [value, setValue] = useState('');
-      const [error, setError] = useState('');
-      const [saving, setSaving] = useState(false);
-      const inputRef = useRef(null);
-
-      useEffect(() => {
-        if (!request) return undefined;
-        setValue(request.title);
-        setError('');
-        setSaving(false);
-        const onKeyDown = (event) => {
-          if (event.key === 'Escape') {
-            event.preventDefault();
-            closeRenameDialog();
-          }
-        };
-        document.addEventListener('keydown', onKeyDown);
-        const handle = window.setTimeout(() => {
-          const node = inputRef.current;
-          if (node && typeof node.focus === 'function') {
-            node.focus();
-            if (typeof node.select === 'function') node.select();
-          }
-        }, 0);
-        return () => {
-          document.removeEventListener('keydown', onKeyDown);
-          window.clearTimeout(handle);
-        };
-      }, [request]);
-
-      if (!request) return null;
-
-      const submit = async () => {
-        const title = value.trim();
-        if (!title) {
-          setError(t('rename.empty'));
-          return;
-        }
-        setSaving(true);
-        setError('');
-        try {
-          if (typeof props.renameSession === 'function') await props.renameSession(request.sessionId, title);
-          closeRenameDialog();
-        } catch (failure) {
-          setSaving(false);
-          setError(t('rename.failed', { message: failure && failure.message ? failure.message : String(failure) }));
-        }
-      };
-
-      return h('div', {
-        className: 'dssx-mask',
-        onPointerDown: (event) => {
-          if (event.target === event.currentTarget) closeRenameDialog();
-        },
-      },
-        h('div', { className: 'dssx-dialog', role: 'dialog', 'aria-modal': 'true', 'aria-label': t('rename.title') },
-          h('div', { className: 'dssx-dialog-title' }, t('rename.title')),
-          h('div', { className: 'dssx-inline-form dssx-rename-form' },
-            h('input', {
-              ref: inputRef,
-              className: 'dssx-input',
-              type: 'text',
-              value,
-              placeholder: t('rename.placeholder'),
-              disabled: saving,
-              onChange: (event) => setValue(event.target.value),
-              onKeyDown: (event) => {
-                if (event.key === 'Enter') {
-                  event.preventDefault();
-                  submit();
-                }
-              },
-            })
-          ),
-          error ? h('div', { className: 'dssx-dialog-error' }, error) : null,
-          h('div', { className: 'dssx-dialog-foot' },
-            h('button', { type: 'button', className: 'dssx-btn', onClick: closeRenameDialog }, t('rename.cancel')),
-            h('button', { type: 'button', className: 'dssx-btn dssx-primary', disabled: saving, onClick: submit },
-              saving ? '\u2026' : t('rename.confirm'))
-          )
-        )
-      );
-    }
-
-    // ------------------------------------------------------------------
     // sidebar browser (stage B): workspaces -> groups -> sessions
     // ------------------------------------------------------------------
     /** Same hook-context factory shape the shipped browser declares for its menu rows. */
@@ -1900,14 +1874,89 @@ window.__ModuleLoader__.load({
         ));
     }
 
+    // Ring caret for group/workspace headers. Geometry is the session row's own
+    // marker (40x30, centre 20,15, outer r7 / inner r4, arrow M20 0… / mini above
+    // the tip), so the hover arrow reads the same as the session row. The size prop
+    // scales the whole marker to keep the hierarchy: workspace > group > session row.
+    function RingCaret(props) {
+      const color = props.color || '#1f1f1f';
+      const open = props.open === true;
+      const size = typeof props.size === 'number' && props.size > 0 ? props.size : 40;
+      const p = (value) => value.toFixed(2);
+      const c0x = 20;
+      const c0y = 15;
+      const outerR = 7;
+      const innerR = 4;
+      const outerSpan = 84;
+      const innerSpan = 63;
+      const polar = (r, deg) => {
+        const a = (deg * Math.PI) / 180;
+        return [c0x + r * Math.cos(a), c0y + r * Math.sin(a)];
+      };
+      const arcPath = (r, startDeg, endDeg) => {
+        const [x1, y1] = polar(r, startDeg);
+        const [x2, y2] = polar(r, endDeg);
+        return 'M' + p(x1) + ' ' + p(y1) + 'A' + r + ' ' + r + ' 0 0 1 ' + p(x2) + ' ' + p(y2);
+      };
+      const arrowPath = 'M 20 0 L 16.5 6 L 20 2 L 23.5 6 Z';
+      const arrowMiniPath = 'M 20 -3.4 L 18.4 -1.2 L 20 -1.7 L 21.6 -1.2 Z';
+      const outerArcA = arcPath(outerR, 225 - outerSpan, 225 + outerSpan);
+      const outerArcB = arcPath(outerR, 45 - outerSpan, 45 + outerSpan);
+      const innerArcA = arcPath(innerR, 315 - innerSpan, 315 + innerSpan);
+      const innerArcB = arcPath(innerR, 135 - innerSpan, 135 + innerSpan);
+      const innerDots = [315 - innerSpan, 315 + innerSpan, 135 - innerSpan, 135 + innerSpan].map((deg, i) => {
+        const [x, y] = polar(innerR, deg);
+        return h('circle', {
+          key: 'ringDot' + i,
+          cx: p(x),
+          cy: p(y),
+          r: 0.7,
+          fill: 'none',
+          stroke: color,
+          strokeWidth: 0.45,
+        });
+      });
+      const height = Math.round(size * 34 / 27);
+      return h('button', {
+        type: 'button',
+        className: cx('dssx-ring-caret', open && 'dssx-ring-open'),
+        'aria-label': open ? 'collapse' : 'expand',
+        'aria-expanded': open ? 'true' : 'false',
+        title: props.title || undefined,
+        style: { width: size + 'px', height: height + 'px' },
+        onClick: props.onClick,
+      },
+        // The viewBox is cropped to the ring's left edge (x=13) and runs taller
+        // (y 0..34) than the ring so the down pose can sit below the ring without
+        // clipping; the extra bottom room lifts the ring and title up a little.
+        h('svg', { width: size, height: height, viewBox: '13 -2 27 34', 'aria-hidden': 'true', style: { display: 'block', overflow: 'visible' } },
+          h('g', { className: 'dssx-ring-arrow' },
+            h('g', { className: 'dssx-ring-arrow-scale' },
+              h('g', { className: 'dssx-ring-arrow-squash' },
+                h('path', { d: arrowPath, fill: color })),
+              h('path', { d: arrowMiniPath, fill: color, className: 'dssx-ring-arrow-mini' }))),
+          h('g', { className: 'dssx-ring-arcs' },
+            h('path', { d: outerArcA, fill: 'none', stroke: color, strokeWidth: 2.5, strokeLinecap: 'butt' }),
+            h('path', { d: outerArcB, fill: 'none', stroke: color, strokeWidth: 2.5, strokeLinecap: 'butt', opacity: 0.55 }),
+            h('path', { d: innerArcA, fill: 'none', stroke: color, strokeWidth: 1.25, strokeLinecap: 'round' }),
+            h('path', { d: innerArcB, fill: 'none', stroke: color, strokeWidth: 1.25, strokeLinecap: 'round', opacity: 0.55 }),
+            ...innerDots))
+      );
+    }
+
     function BrowserSessionRow(props) {
       const t = props.t;
       const summary = props.summary;
       const current = props.current === true;
-      const section = props.section;
       const renderSlot = props.renderSlot;
       const openSession = props.openSession;
+      const renameSession = props.renameSession;
       const [menuPos, setMenuPos] = useState(null);
+      // Inline rename, same interaction as a group header: the menu row swaps the
+      // title for an input in place; Enter saves, Escape cancels.
+      const [editing, setEditing] = useState(false);
+      const [editingName, setEditingName] = useState('');
+      const [editingError, setEditingError] = useState('');
       const menuRef = useRef(null);
       const title = summary.title || (summary.blank ? t('newSession') : t('untitled'));
 
@@ -1948,6 +1997,21 @@ window.__ModuleLoader__.load({
         }
       };
 
+      const commitRename = async () => {
+        const next = editingName.trim();
+        if (!next) {
+          setEditingError(t('rename.empty'));
+          return;
+        }
+        try {
+          if (typeof renameSession === 'function') await renameSession(summary.id, next);
+          setEditing(false);
+          setEditingError('');
+        } catch (failure) {
+          setEditingError(t('rename.failed', { message: failure && failure.message ? failure.message : String(failure) }));
+        }
+      };
+
       const menuItems = [
         h('button', {
           type: 'button',
@@ -1964,7 +2028,9 @@ window.__ModuleLoader__.load({
           className: 'dssx-pop-item',
           onClick: () => {
             setMenuPos(null);
-            openRenameDialog({ sessionId: summary.id, title: summary.title || '' });
+            setEditingError('');
+            setEditingName(summary.title || '');
+            setEditing(true);
           },
         }, t('row.rename')),
       ];
@@ -2003,10 +2069,14 @@ window.__ModuleLoader__.load({
 
       return h('div', {
         className: cx('dssx-browser-row', current && 'dssx-current', props.dragging && 'dssx-dragging'),
-        draggable: true,
+        'data-flip': props.flipKey,
+        // While renaming, the row is not a drag source and its click must not
+        // open the session: the input owns the pointer.
+        draggable: editing !== true,
         // Whole-row click opens the session. Clicks on the row's own buttons
         // (open/actions/menu items) keep their own handlers.
         onClick: (event) => {
+          if (editing) return;
           if (props.dragging === true) return;
           const target = event.target;
           if (target && typeof target.closest === 'function' && target.closest('button, [role="menuitem"], input, textarea, select')) return;
@@ -2014,6 +2084,12 @@ window.__ModuleLoader__.load({
         },
         onDragStart: (event) => {
           if (typeof props.onDragStart === 'function') props.onDragStart(event, summary.id);
+        },
+        onDragOver: (event) => {
+          if (typeof props.onDragOver === 'function') props.onDragOver(event, summary.id);
+        },
+        onDrop: (event) => {
+          if (typeof props.onDrop === 'function') props.onDrop(event, summary.id);
         },
         onDragEnd: () => {
           if (typeof props.onDragEnd === 'function') props.onDragEnd();
@@ -2026,25 +2102,43 @@ window.__ModuleLoader__.load({
           completed: props.completed === true,
           pending: props.pending || null,
         }),
-        h('span', { className: 'dssx-browser-seat' },
-          props.scheduled === true
-            ? h(ClockMark, { title: t('row.schedule') })
-            : null,
-          typeof props.contextPercent === 'number'
-            ? h(ContextRing, {
-              percent: props.contextPercent,
-              spinning: props.running === true,
-              title: t('row.context', { percent: props.contextPercent }),
-            })
-            : null),
-        h('button', {
-          type: 'button',
-          className: 'dssx-browser-open',
-          title,
-          onClick: () => openSession(summary.id),
-        },
-          section ? h(Dot, { color: section.color }) : null,
-          h('span', { className: 'dssx-browser-name' }, title)
+        h('div', { className: 'dssx-browser-shift' },
+          h('span', { className: 'dssx-browser-seat' },
+            props.scheduled === true
+              ? h(ClockMark, { title: t('row.schedule') })
+              : null,
+            typeof props.contextPercent === 'number'
+              ? h(ContextRing, {
+                percent: props.contextPercent,
+                spinning: props.running === true,
+                title: t('row.context', { percent: props.contextPercent }),
+              })
+              : null),
+          editing
+            ? h('div', { className: cx('dssx-inline-form', 'dssx-rename-inline') },
+              h(InlineInput, {
+                value: editingName,
+                placeholder: t('rename.placeholder'),
+                invalid: editingError !== '',
+                title: editingError || t('rename.title'),
+                onChange: (value) => {
+                  setEditingName(value);
+                  if (editingError) setEditingError('');
+                },
+                onCommit: commitRename,
+                onCancel: () => {
+                  setEditing(false);
+                  setEditingError('');
+                },
+              }))
+            : h('button', {
+              type: 'button',
+              className: 'dssx-browser-open',
+              title,
+              onClick: () => openSession(summary.id),
+            },
+              h('span', { className: 'dssx-browser-name' }, title)
+            )
         ),
         h('div', { className: 'dssx-browser-tail' },
           h('span', { className: 'dssx-row-cost' }, formatCny(props.cost)),
@@ -2104,10 +2198,13 @@ window.__ModuleLoader__.load({
       const startSessionInGroup = props.startSessionInGroup;
       const addWorkspace = props.addWorkspace;
       const deleteWorkspace = props.deleteWorkspace;
+      const moveWorkspaceBefore = props.moveWorkspaceBefore;
       const archiveSession = props.archiveSession;
+      const renameSession = props.renameSession;
       const unarchiveSession = props.unarchiveSession;
       const openPanel = props.openPanel;
       const refreshProjections = props.refreshProjections;
+      const readBalance = props.readBalance;
       const scheduleSessions = props.scheduleSessions;
       const onScheduleChanged = props.onScheduleChanged;
       const useWorkspaces = workspacesHookOf(props);
@@ -2181,14 +2278,83 @@ window.__ModuleLoader__.load({
         };
       }, [scheduleSessions, onScheduleChanged]);
 
+      // Remaining account balance for the workspace toolbar. The Host reads it
+      // from the signed-in account; a failed or signed-out read keeps the last
+      // value instead of blanking the chip, and a slow poll follows new spend.
+      const [accountBalance, setAccountBalance] = useState(null);
+      useEffect(() => {
+        if (typeof readBalance !== 'function') return undefined;
+        let alive = true;
+        const refresh = () => {
+          Promise.resolve()
+            .then(() => readBalance())
+            .then((next) => {
+              if (!alive || !next) return;
+              setAccountBalance((current) => (current
+                && current.balance === next.balance
+                && current.currency === next.currency ? current : next));
+            })
+            .catch(() => {});
+        };
+        refresh();
+        const timer = window.setInterval(refresh, 30000);
+        return () => {
+          alive = false;
+          window.clearInterval(timer);
+        };
+      }, [readBalance]);
+
       const [showArchived, setShowArchived] = useState(false);
       const [collapsedWorkspaces, setCollapsedWorkspaces] = useState({});
       const [collapsedGroups, setCollapsedGroups] = useState({});
+      // Group collapse is derived until the user touches it: a group starts
+      // collapsed unless one of its rows is active — running (its context ring
+      // spins), asking a question or waiting for approval / plan review (the
+      // marker ring takes the status colour), carrying a scheduled reminder
+      // (the clock mark), or being the conversation currently open in the main
+      // view. Those are exactly the row signals the sidebar paints, so the
+      // default matches what is visible on the row. After a toggle the explicit
+      // value in collapsedGroups wins until the page is reloaded.
+      const groupHasActiveRow = (group) => group.rows.some((row) => {
+        const id = row.id;
+        return runningOf(id) === true
+          || pendingOf(id) !== null
+          || scheduledIds.has(String(id))
+          // The session the user currently has open counts as active too: after a
+          // reload its group must be expanded or the restored conversation is
+          // hidden behind a collapsed header.
+          || id === mainSessionId;
+      });
+      const setGroupCollapsed = (groupKey, collapsed) => {
+        setCollapsedGroups((current) => Object.assign({}, current, { [groupKey]: collapsed }));
+      };
       const [busy, setBusy] = useState(false);
       const [pendingWorkspaceDelete, setPendingWorkspaceDelete] = useState(null);
       const [pendingGroupDelete, setPendingGroupDelete] = useState(null);
-      const [draggingId, setDraggingId] = useState(null);
-      const [dropTarget, setDropTarget] = useState(null);
+      // One live HTML5 drag at a time: { kind: 'workspace' | 'group' | 'session',
+      // id, workspaceId, sectionId }. A single object keeps the three reorder
+      // kinds from mistaking each other's drop targets.
+      const [drag, setDrag] = useState(null);
+      // The reordered list rendered while the pointer moves. It is a pure
+      // preview: nothing is written until drop. Shapes:
+      //   { kind: 'workspace', order: [workspaceId…] }
+      //   { kind: 'group', wsId, order: [sectionId…] }
+      //   { kind: 'session', sourceId, fromWs, fromSection, toWs, toSection, ids }
+      const [preview, setPreview] = useState(null);
+      const previewRef = useRef(null);
+      // Where the "join this group" tint applies. Insert lines are gone: the live
+      // reorder itself shows the landing position.
+      const [dropHint, setDropHint] = useState(null);
+      // FLIP bookkeeping: every preview change captures element tops first and
+      // animates the delta afterwards. `flipKindRef` survives the clearing of
+      // the preview so an abandoned drag still animates the rollback.
+      const flipBefore = useRef(null);
+      const flipKindRef = useRef('row');
+      const scrollRef = useRef(null);
+      // Row-level hysteresis: a tiny pointer wobble must not re-run the preview,
+      // and the before/after side only flips past the middle threshold.
+      const dragPointRef = useRef(null);
+      const sessionDropRef = useRef(null);
       const [editingGroup, setEditingGroup] = useState(null);
       const [editingName, setEditingName] = useState('');
       const [colorPicker, setColorPicker] = useState(null);
@@ -2199,14 +2365,6 @@ window.__ModuleLoader__.load({
           window.clearTimeout(leaveTimerRef.current);
           leaveTimerRef.current = null;
         }
-      };
-
-      const armLeave = (key) => {
-        cancelLeave();
-        leaveTimerRef.current = window.setTimeout(() => {
-          leaveTimerRef.current = null;
-          setDropTarget((current) => (current === key ? null : current));
-        }, 80);
       };
 
       useEffect(() => {
@@ -2432,6 +2590,86 @@ window.__ModuleLoader__.load({
         return out;
       }, [items, byId, archived, pinned, sectionsState, showArchived, mainSessionId, moves]);
 
+      // The list actually rendered while a drag preview is active. Moving items
+      // reorder inside their own level; a Session preview also pulls the source
+      // out of its old group and drops it into the target group.
+      const renderedNodes = useMemo(() => {
+        if (!preview) return nodes;
+        if (preview.kind === 'workspace') {
+          return preview.order
+            .map((id) => nodes.find((node) => String(node.workspace.workspaceId) === id))
+            .filter(Boolean);
+        }
+        return nodes.map((node) => {
+          const wsId = String(node.workspace.workspaceId);
+          if (preview.kind === 'group') {
+            if (preview.wsId !== wsId) return node;
+            const byKey = new Map(node.groups.map((group) => [group.key, group]));
+            return Object.assign({}, node, {
+              groups: preview.order.map((key) => byKey.get(key)).filter(Boolean),
+            });
+          }
+          const moved = byId[preview.sourceId];
+          const targetHere = preview.toWs === wsId;
+          const sourceHere = preview.fromWs === wsId;
+          const groups = node.groups.map((group) => {
+            const isTarget = targetHere && group.key === preview.toSection;
+            const isSource = sourceHere && group.key === preview.fromSection && !isTarget;
+            let rows = group.rows;
+            if (isTarget) {
+              const map = new Map(rows.map((row) => [row.id, row]));
+              if (moved && !map.has(moved.id)) map.set(moved.id, moved);
+              rows = preview.ids.map((id) => map.get(id)).filter(Boolean);
+            } else if (isSource) {
+              rows = rows.filter((row) => row.id !== preview.sourceId);
+            }
+            return Object.assign({}, group, { rows });
+          });
+          let unassigned = node.unassigned;
+          if (targetHere && preview.toSection === '') {
+            const map = new Map(unassigned.map((row) => [row.id, row]));
+            if (moved && !map.has(moved.id)) map.set(moved.id, moved);
+            unassigned = preview.ids.map((id) => map.get(id)).filter(Boolean);
+          } else if (sourceHere && preview.fromSection === '') {
+            unassigned = unassigned.filter((row) => row.id !== preview.sourceId);
+          }
+          return Object.assign({}, node, { groups, unassigned });
+        });
+      }, [nodes, preview, byId]);
+
+      // Collapse derivation keeps using the pre-drag list: pulling a running row
+      // out of its group mid-drag must not snap that group shut, and dropping a
+      // running row into a collapsed group must not pop it open before drop.
+      const baseGroups = useMemo(() => {
+        const map = new Map();
+        for (const node of nodes) {
+          map.set(String(node.workspace.workspaceId), new Map(node.groups.map((group) => [group.key, group])));
+        }
+        return map;
+      }, [nodes]);
+
+      // A group that opened because one of its rows carries the green ring
+      // (finished, not read yet) stays open for the rest of the page life:
+      // reading that session clears the ring, and snapping the group shut
+      // afterwards would close the list under the pointer. A manual toggle still
+      // wins; a reload starts the snapshot over.
+      const completedOpenGroups = useRef(new Set());
+      const [, bumpCompletedOpen] = useState(0);
+      useEffect(() => {
+        let changed = false;
+        for (const node of nodes) {
+          for (const group of node.groups) {
+            const key = node.workspace.workspaceId + ':' + group.key;
+            if (completedOpenGroups.current.has(key)) continue;
+            if (group.rows.some((row) => completedOf(row.id) === true)) {
+              completedOpenGroups.current.add(key);
+              changed = true;
+            }
+          }
+        }
+        if (changed) bumpCompletedOpen((value) => value + 1);
+      }, [nodes, statusMap]);
+
       const ownerOf = (sessionId) => {
         for (const workspace of items) {
           if (Array.isArray(workspace.sessionIds) && workspace.sessionIds.indexOf(sessionId) >= 0) return workspace.workspaceId;
@@ -2440,36 +2678,253 @@ window.__ModuleLoader__.load({
         return move ? move.workspaceId : '';
       };
 
-      const beginDrag = (event, sessionId) => {
-        setDraggingId(sessionId);
+      // A drag that starts on a header button (collapse ring, +, delete, …) must
+      // not turn into a reorder: the button keeps its own click, and only the
+      // label / blank header area is a drag handle.
+      const isButtonTarget = (event) => {
+        const target = event && event.target;
+        return !!(target && typeof target.closest === 'function'
+          && target.closest('button, input, textarea, select, a, [role="menuitem"]'));
+      };
+
+      // Half of the target used by the insert line: pointer above the middle
+      // means "before", below means "after" (the Host's native workspace drag
+      // uses the same rule).
+      const halfOf = (event) => {
+        const node = event && event.currentTarget;
+        if (!node || typeof node.getBoundingClientRect !== 'function') return 'before';
+        const rect = node.getBoundingClientRect();
+        if (!rect || rect.height <= 0) return 'before';
+        return event.clientY - rect.top < rect.height / 2 ? 'before' : 'after';
+      };
+
+      // ---- live reorder preview (FLIP) ----
+      // Element tops captured before a preview change; `data-flip` keys are
+      // `ws:<id>`, `group:<ws>:<section>` and `row:<sessionId>`.
+      const captureFlip = () => {
+        const tops = {};
+        const node = scrollRef.current;
+        if (!node || typeof node.querySelectorAll !== 'function') return tops;
+        const elements = node.querySelectorAll('[data-flip]');
+        for (let index = 0; index < elements.length; index += 1) {
+          const element = elements[index];
+          tops[element.getAttribute('data-flip')] = element.getBoundingClientRect().top;
+        }
+        return tops;
+      };
+
+      const playFlip = (before, kind) => {
+        if (!before) return;
+        let reduced = false;
         try {
-          event.dataTransfer.setData('text/plain', sessionId);
+          reduced = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+        } catch (error) {
+          reduced = false;
+        }
+        if (reduced) return;
+        const node = scrollRef.current;
+        if (!node || typeof node.querySelectorAll !== 'function') return;
+        const prefix = kind + ':';
+        const elements = node.querySelectorAll('[data-flip]');
+        for (let index = 0; index < elements.length; index += 1) {
+          const element = elements[index];
+          const key = element.getAttribute('data-flip') || '';
+          if (key.indexOf(prefix) !== 0) continue;
+          const previous = before[key];
+          if (typeof previous !== 'number') continue;
+          const dy = previous - element.getBoundingClientRect().top;
+          if (Math.abs(dy) < 0.5) continue;
+          // Rows are short and numerous: a 120ms move reads as stable there,
+          // while the larger workspace / group blocks keep the softer 180ms.
+          const duration = kind === 'row' ? 120 : 180;
+          element.style.transition = 'none';
+          element.style.transform = 'translateY(' + dy + 'px)';
+          // Force the offset to be the starting frame before the transition runs.
+          element.getBoundingClientRect();
+          requestAnimationFrame(() => {
+            element.style.transition = 'transform ' + duration + 'ms cubic-bezier(.2,.7,.3,1)';
+            element.style.transform = '';
+          });
+          window.setTimeout(() => {
+            element.style.transition = '';
+            element.style.transform = '';
+          }, duration + 80);
+        }
+      };
+
+      useLayoutEffect(() => {
+        if (!flipBefore.current) return;
+        const before = flipBefore.current;
+        flipBefore.current = null;
+        playFlip(before, flipKindRef.current);
+      }, [preview]);
+
+      const samePreview = (left, right) => {
+        if (!left || !right) return left === right;
+        return JSON.stringify(left) === JSON.stringify(right);
+      };
+
+      // Every preview change captures the current element tops first, then the
+      // layout effect animates the difference.
+      const applyPreview = (next) => {
+        if (samePreview(previewRef.current, next)) return;
+        flipKindRef.current = next.kind === 'workspace' ? 'ws' : next.kind === 'group' ? 'group' : 'row';
+        flipBefore.current = captureFlip();
+        previewRef.current = next;
+        setPreview(next);
+      };
+
+      const clearPreview = () => {
+        if (previewRef.current === null) return;
+        flipBefore.current = captureFlip();
+        previewRef.current = null;
+        setPreview(null);
+      };
+
+      const beginDrag = (kind, event, info) => {
+        setDrag(Object.assign({ kind }, info));
+        setDropHint(null);
+        dragPointRef.current = null;
+        sessionDropRef.current = null;
+        try {
+          event.dataTransfer.setData('text/plain', String(info.id));
           event.dataTransfer.effectAllowed = 'move';
         } catch (error) {
-          // Some environments refuse custom drag data; the in-memory id still drives the move.
+          // Some environments refuse custom drag data; the in-memory object still drives the move.
         }
       };
 
       const endDrag = () => {
-        setDraggingId(null);
-        setDropTarget(null);
+        clearPreview();
+        setDrag(null);
+        cancelLeave();
+        setDropHint(null);
+        dragPointRef.current = null;
+        sessionDropRef.current = null;
       };
 
-      const handleDrop = (event, workspaceId, sectionId) => {
-        event.preventDefault();
-        event.stopPropagation();
-        const sessionId = draggingId || event.dataTransfer.getData('text/plain');
-        cancelLeave();
-        setDropTarget(null);
-        setDraggingId(null);
-        if (!sessionId) return;
-        const owner = ownerOf(sessionId);
-        if (owner === workspaceId) {
-          clearSessionMove(sessionId);
-          assignSession(workspaceId, sessionId, sectionId || '');
+      // Header drag handles. Kept as plain calls (no inline block) so the header
+      // attribute object stays a single flat `{ … }` for structure checks.
+      const startWorkspaceDrag = (event, workspaceId) => {
+        if (isButtonTarget(event)) {
+          event.preventDefault();
           return;
         }
-        setSessionMove(sessionId, workspaceId, sectionId || '');
+        beginDrag('workspace', event, { id: workspaceId, workspaceId });
+      };
+
+      const startGroupDrag = (event, workspaceId, sectionId) => {
+        if (isButtonTarget(event)) {
+          event.preventDefault();
+          return;
+        }
+        beginDrag('group', event, { id: sectionId, workspaceId, sectionId });
+      };
+
+      // Insert `movedId` next to `targetId` in a flat id list (before/after by
+      // the pointer half), returning the resulting order.
+      const insertNear = (base, movedId, targetId, pos) => {
+        const rest = base.filter((id) => id !== movedId);
+        const targetIndex = targetId ? rest.indexOf(targetId) : -1;
+        const at = targetIndex < 0 ? rest.length : (pos === 'before' ? targetIndex : targetIndex + 1);
+        const next = rest.slice();
+        next.splice(at, 0, movedId);
+        return next;
+      };
+
+      // Workspace reorder preview; the Host order is the base until a preview exists.
+      const previewWorkspaceAt = (targetId, pos) => {
+        const base = previewRef.current && previewRef.current.kind === 'workspace'
+          ? previewRef.current.order
+          : items.map((workspace) => String(workspace.workspaceId));
+        applyPreview({ kind: 'workspace', order: insertNear(base, drag.id, String(targetId), pos) });
+      };
+
+      // Group reorder preview; only sections of the same workspace move.
+      const previewGroupAt = (workspaceId, sectionOrder, targetId, pos) => {
+        const base = previewRef.current && previewRef.current.kind === 'group' && previewRef.current.wsId === workspaceId
+          ? previewRef.current.order
+          : sectionOrder;
+        applyPreview({ kind: 'group', wsId: workspaceId, order: insertNear(base, drag.id, targetId, pos) });
+      };
+
+      const previewSessionAt = (workspaceId, sectionId, ids, targetId, pos) => {
+        applyPreview({
+          kind: 'session',
+          sourceId: drag.id,
+          fromWs: drag.workspaceId,
+          fromSection: drag.sectionId || '',
+          toWs: workspaceId,
+          toSection: sectionId || '',
+          ids: insertNear(ids, drag.id, targetId, pos),
+        });
+        setDropHint(null);
+      };
+
+      // A Session drop commits the previewed list; ownership (assignments vs the
+      // display-only moves overlay) is settled by placeSessionIn in one commit.
+      const handleSessionDrop = (event, workspaceId, sectionId) => {
+        if (!drag || drag.kind !== 'session') return;
+        const sessionId = drag.id;
+        event.preventDefault();
+        event.stopPropagation();
+        const current = previewRef.current;
+        const ids = current && current.kind === 'session' && current.toWs === workspaceId
+          && current.toSection === (sectionId || '')
+          ? current.ids
+          : null;
+        cancelLeave();
+        setDropHint(null);
+        if (!sessionId || !ids) {
+          endDrag();
+          return;
+        }
+        const index = ids.indexOf(sessionId);
+        const anchor = index >= 0 && index + 1 < ids.length ? ids[index + 1] : undefined;
+        const cross = ownerOf(sessionId) !== workspaceId;
+        placeSessionIn(workspaceId, sectionId, sessionId, ids, anchor, cross);
+        endDrag();
+      };
+
+      // A row is a Session drop target; the pointer half picks the insertion slot.
+      // Rows are ~22px tall, so this path adds hysteresis: ignore sub-3px wobbles,
+      // hold the current side until the pointer is clearly past the middle, and
+      // remember the last target so a repeated dragover is a no-op.
+      const onRowDragOver = (event, sessionId, workspaceId, sectionId, ids) => {
+        if (!drag || drag.kind !== 'session') return;
+        if (drag.id === sessionId) {
+          // Hovering the dragged row itself must not fall through to the group
+          // container, which would preview "join at top".
+          event.preventDefault();
+          event.stopPropagation();
+          return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        const point = dragPointRef.current;
+        if (point && Math.abs(event.clientY - point.y) < 3 && Math.abs(event.clientX - point.x) < 3) return;
+        dragPointRef.current = { x: event.clientX, y: event.clientY };
+        // Layout position, not the visual rect: a row mid-FLIP carries a
+        // translateY, and measuring that would feed the animation back into the
+        // hit test. offsetTop / offsetHeight ignore the row's own transform.
+        const element = event.currentTarget;
+        const parent = element.offsetParent;
+        const rect = parent && typeof element.offsetTop === 'number'
+          ? { top: parent.getBoundingClientRect().top + element.offsetTop, height: element.offsetHeight }
+          : element.getBoundingClientRect();
+        const key = workspaceId + '\u0000' + (sectionId || '') + '\u0000' + sessionId;
+        const previous = sessionDropRef.current;
+        const same = previous !== null && previous.key === key;
+        const side = sessionDropSide(rect.top, rect.height, event.clientY, same ? previous.side : null);
+        if (side === null || (same && previous.side === side)) return;
+        cancelLeave();
+        previewSessionAt(workspaceId, sectionId, ids, sessionId, side);
+        sessionDropRef.current = { key, side };
+      };
+
+      const onRowDrop = (event, workspaceId, sectionId) => {
+        if (!drag || drag.kind !== 'session') return;
+        handleSessionDrop(event, workspaceId, sectionId);
       };
 
       if (!wide) {
@@ -2486,6 +2941,10 @@ window.__ModuleLoader__.load({
 
       const tools = h('div', { className: 'dssx-browser-tools' },
         h('span', { className: 'dssx-browser-tools-title' }, t('workspace.label')),
+        h('span', {
+          className: 'dssx-row-cost dssx-row-cost-static dssx-browser-balance',
+          title: t('browser.balance'),
+        }, formatAccountBalance(accountBalance)),
         h('button', {
           type: 'button',
           className: cx('dssx-browser-tool', showArchived && 'dssx-active'),
@@ -2517,20 +2976,59 @@ window.__ModuleLoader__.load({
           h('div', { className: 'dssx-browser-empty' }, t('browser.noWorkspace')));
       }
 
-      const body = nodes.map((node) => {
+      const body = renderedNodes.map((node) => {
         const workspace = node.workspace;
         const wsKey = workspace.workspaceId;
         const wsCollapsed = collapsedWorkspaces[wsKey] === true;
         const count = node.groups.reduce((sum, group) => sum + group.rows.length, 0) + node.unassigned.length;
         const wsCost = sumCost(node.groups.reduce((acc, group) => acc.concat(group.rows), []).concat(node.unassigned));
-        return h('section', { className: 'dssx-browser-ws', key: wsKey },
-          h('header', { className: 'dssx-browser-ws-head' },
-            h('button', {
-              type: 'button',
-              className: 'dssx-browser-caret',
-              'aria-label': wsCollapsed ? 'expand' : 'collapse',
+        const wsDragMark = drag && drag.kind === 'workspace' && drag.id === wsKey;
+        return h('section', {
+          className: cx('dssx-browser-ws', wsDragMark && 'dssx-dragging'),
+          key: wsKey,
+          'data-flip': 'ws:' + wsKey,
+          // The whole workspace block is the reorder target: pointer above its
+          // middle inserts before it, below inserts after it. The list reorders
+          // live, so the target itself moves under the pointer.
+          onDragOver: (event) => {
+            if (!drag || drag.kind !== 'workspace' || drag.id === wsKey) return;
+            event.preventDefault();
+            event.stopPropagation();
+            cancelLeave();
+            previewWorkspaceAt(wsKey, halfOf(event));
+          },
+          onDrop: (event) => {
+            if (!drag || drag.kind !== 'workspace') return;
+            event.preventDefault();
+            event.stopPropagation();
+            const current = previewRef.current;
+            const base = items.map((item) => String(item.workspaceId));
+            if (current && current.kind === 'workspace') {
+              const order = current.order;
+              const index = order.indexOf(drag.id);
+              if (index >= 0 && order.join('|') !== base.join('|') && typeof moveWorkspaceBefore === 'function') {
+                const anchor = index + 1 < order.length ? order[index + 1] : undefined;
+                const pending = moveWorkspaceBefore(drag.id, anchor);
+                if (pending && typeof pending.catch === 'function') pending.catch(() => {});
+              }
+            }
+            endDrag();
+          },
+        },
+          h('header', {
+            className: 'dssx-browser-ws-head',
+            draggable: true,
+            onDragStart: (event) => startWorkspaceDrag(event, wsKey),
+            onDragEnd: endDrag,
+            onClick: (event) => headerToggleClick(event, () => toggleKey(collapsedWorkspaces, setCollapsedWorkspaces, wsKey)),
+          },
+            h(RingCaret, {
+              color: '#1f1f1f',
+              size: 36,
+              open: !wsCollapsed,
+              title: workspaceTitleOf(workspace, t),
               onClick: () => toggleKey(collapsedWorkspaces, setCollapsedWorkspaces, wsKey),
-            }, h(IconChevron, { open: !wsCollapsed })),
+            }),
             h('span', { className: 'dssx-browser-ws-title', title: workspaceTitleOf(workspace, t) },
               workspaceTitleOf(workspace, t)),
             h('span', { className: cx('dssx-browser-count', 'dssx-browser-ws-count') }, count),
@@ -2586,38 +3084,87 @@ window.__ModuleLoader__.load({
               },
             }, h(IconTrash, { size: 15 })))
           ),
-          wsCollapsed ? null : h('div', { className: 'dssx-browser-groups' },
-            node.groups.map((group, groupIndex) => {
+          h('div', { className: cx('dssx-collapse', wsCollapsed && 'dssx-collapsed') },
+            h('div', { className: 'dssx-collapse-inner dssx-browser-groups' },
+            node.groups.map((group) => {
               const groupKey = wsKey + ':' + group.key;
-              const groupCollapsed = collapsedGroups[groupKey] === true;
+              const baseGroup = (baseGroups.get(String(wsKey)) || new Map()).get(group.key) || group;
+              const groupCollapsed = groupKey in collapsedGroups
+                ? collapsedGroups[groupKey] === true
+                : !(groupHasActiveRow(baseGroup) || completedOpenGroups.current.has(groupKey));
               const groupTargetKey = 'group:' + groupKey;
               const isEditingGroup = editingGroup !== null && editingGroup.wsId === wsKey && editingGroup.sectionId === group.key;
               const showColorPicker = colorPicker !== null && colorPicker.wsId === wsKey && colorPicker.sectionId === group.key;
               const pendingGroup = pendingGroupDelete === groupKey;
               const rowIds = group.rows.map((row) => row.id);
+              const groupDragMark = drag && drag.kind === 'group' && drag.id === group.key;
+              const groupInto = dropHint && dropHint.key === groupTargetKey && dropHint.pos === 'into';
               return h('div', {
-                className: cx('dssx-browser-group', dropTarget === groupTargetKey && 'dssx-drop-target'),
+                className: cx('dssx-browser-group',
+                  groupDragMark && 'dssx-dragging',
+                  groupInto && 'dssx-drop-into'),
                 key: group.key,
+                'data-flip': 'group:' + groupKey,
                 onDragOver: (event) => {
+                  if (!drag) return;
+                  if (drag.kind === 'group') {
+                    if (drag.id === group.key || drag.workspaceId !== wsKey) return;
+                    event.preventDefault();
+                    event.stopPropagation();
+                    cancelLeave();
+                    const sectionIds = (sectionsState.byWorkspace[wsKey] || EMPTY_BUCKET).sections.map((section) => section.id);
+                    previewGroupAt(wsKey, sectionIds, group.key, halfOf(event));
+                    setDropHint(null);
+                    return;
+                  }
+                  if (drag.kind === 'session') {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    cancelLeave();
+                    const first = rowIds.find((id) => id !== drag.id);
+                    previewSessionAt(wsKey, group.key, rowIds, first, 'before');
+                    sessionDropRef.current = { key: wsKey + '\u0000' + group.key + '\u0000', side: 'into' };
+                    setDropHint({ key: groupTargetKey, pos: 'into' });
+                  }
+                },
+                onDrop: (event) => {
+                  if (!drag) return;
+                  if (drag.kind === 'workspace') return;
                   event.preventDefault();
-                  cancelLeave();
-                  setDropTarget((current) => (current === groupTargetKey ? current : groupTargetKey));
+                  event.stopPropagation();
+                  if (drag.kind === 'group') {
+                    const current = previewRef.current;
+                    if (current && current.kind === 'group' && current.wsId === wsKey) {
+                      const order = current.order;
+                      const index = order.indexOf(drag.id);
+                      const sectionIds = (sectionsState.byWorkspace[wsKey] || EMPTY_BUCKET).sections.map((section) => section.id);
+                      if (index >= 0 && order.join('|') !== sectionIds.join('|')) {
+                        const anchor = index + 1 < order.length ? order[index + 1] : undefined;
+                        moveSectionBefore(wsKey, drag.id, anchor);
+                      }
+                    }
+                    endDrag();
+                    return;
+                  }
+                  if (drag.kind === 'session') {
+                    handleSessionDrop(event, wsKey, group.key);
+                  }
                 },
-                onDragLeave: (event) => {
-                  const next = event.relatedTarget;
-                  if (next && event.currentTarget.contains(next)) return;
-                  armLeave(groupTargetKey);
-                },
-                onDrop: (event) => handleDrop(event, wsKey, group.key),
               },
-                h('header', { className: 'dssx-browser-group-head' },
-                  h('button', {
-                    type: 'button',
-                    className: 'dssx-browser-caret',
-                    'aria-label': groupCollapsed ? 'expand' : 'collapse',
-                    onClick: () => toggleKey(collapsedGroups, setCollapsedGroups, groupKey),
-                  }, h(IconChevron, { open: !groupCollapsed })),
-                  h(Dot, { color: group.color }),
+                h('header', {
+                  className: 'dssx-browser-group-head',
+                  draggable: !isEditingGroup,
+                  onDragStart: (event) => startGroupDrag(event, wsKey, group.key),
+                  onDragEnd: endDrag,
+                  onClick: (event) => headerToggleClick(event, () => setGroupCollapsed(groupKey, !groupCollapsed)),
+                },
+                  h(RingCaret, {
+                    color: group.color,
+                    size: 30,
+                    open: !groupCollapsed,
+                    title: group.name,
+                    onClick: () => setGroupCollapsed(groupKey, !groupCollapsed),
+                  }),
                   isEditingGroup
                     ? h('div', { className: 'dssx-inline-form dssx-inline-rename' },
                       h(InlineInput, {
@@ -2643,27 +3190,11 @@ window.__ModuleLoader__.load({
                         // A collapsed group would file the new row out of sight;
                         // reveal it first, as "add group" already does for a
                         // collapsed workspace.
-                        if (groupCollapsed) toggleKey(collapsedGroups, setCollapsedGroups, groupKey);
+                        if (groupCollapsed) setGroupCollapsed(groupKey, false);
                         if (typeof startSessionInGroup === 'function') startSessionInGroup(wsKey, group.key);
                         else if (typeof startSession === 'function') startSession(wsKey);
                       },
                     }, h(IconPlus, { size: 14 })),
-                    h('button', {
-                      type: 'button',
-                      className: 'dssx-browser-tool',
-                      title: t('section.up'),
-                      'aria-label': t('section.up'),
-                      disabled: groupIndex === 0,
-                      onClick: () => moveSection(wsKey, group.key, -1),
-                    }, h(IconArrowUp, { size: 14 })),
-                    h('button', {
-                      type: 'button',
-                      className: 'dssx-browser-tool',
-                      title: t('section.down'),
-                      'aria-label': t('section.down'),
-                      disabled: groupIndex === node.groups.length - 1,
-                      onClick: () => moveSection(wsKey, group.key, 1),
-                    }, h(IconArrowDown, { size: 14 })),
                     h('button', {
                       type: 'button',
                       className: 'dssx-browser-tool',
@@ -2713,7 +3244,8 @@ window.__ModuleLoader__.load({
                       setColorPicker(null);
                     },
                   }))) : null,
-                groupCollapsed ? null : h('div', { className: 'dssx-browser-rows' },
+                h('div', { className: cx('dssx-collapse', groupCollapsed && 'dssx-collapsed') },
+                  h('div', { className: 'dssx-collapse-inner dssx-browser-rows' },
                   group.rows.length === 0
                     ? h('div', { className: 'dssx-browser-empty-row' }, t('section.empty'))
                     : group.rows.map((summary, rowIndex) => h(BrowserSessionRow, {
@@ -2733,29 +3265,42 @@ window.__ModuleLoader__.load({
                       unarchiveSession,
                       renderSlot,
                       openSession,
-                      dragging: draggingId === summary.id,
-                      onDragStart: beginDrag,
+                      renameSession,
+                      dragging: drag && drag.kind === 'session' && drag.id === summary.id,
+                      flipKey: 'row:' + summary.id,
+                      onDragStart: (event, id) => {
+                        beginDrag('session', event, { id, workspaceId: wsKey, sectionId: group.key });
+                      },
+                      onDragOver: (event, id) => onRowDragOver(event, id, wsKey, group.key, rowIds),
+                      onDrop: (event) => onRowDrop(event, wsKey, group.key),
                       onDragEnd: endDrag,
                       canMoveUp: rowIndex > 0,
                       canMoveDown: rowIndex < group.rows.length - 1,
                       onMoveUp: () => moveSessionInGroup(wsKey, group.key, rowIds, rowIndex, -1),
                       onMoveDown: () => moveSessionInGroup(wsKey, group.key, rowIds, rowIndex, 1),
-                    })))
+                    }))))
               );
             }),
             h('div', {
-              className: cx('dssx-browser-group', node.groups.length > 0 && 'dssx-unassigned-group', dropTarget === 'unassigned:' + wsKey && 'dssx-drop-target'),
+              className: cx('dssx-browser-group', node.groups.length > 0 && 'dssx-unassigned-group',
+                dropHint && dropHint.key === 'unassigned:' + wsKey && 'dssx-drop-into'),
               onDragOver: (event) => {
+                if (!drag || drag.kind !== 'session') return;
                 event.preventDefault();
+                event.stopPropagation();
                 cancelLeave();
-                setDropTarget((current) => (current === 'unassigned:' + wsKey ? current : 'unassigned:' + wsKey));
+                const ids = node.unassigned.map((row) => row.id);
+                const first = ids.find((id) => id !== drag.id);
+                previewSessionAt(wsKey, '', ids, first, 'before');
+                sessionDropRef.current = { key: wsKey + '\u0000\u0000', side: 'into' };
+                setDropHint({ key: 'unassigned:' + wsKey, pos: 'into' });
               },
-              onDragLeave: (event) => {
-                const next = event.relatedTarget;
-                if (next && event.currentTarget.contains(next)) return;
-                armLeave('unassigned:' + wsKey);
+              onDrop: (event) => {
+                if (!drag || drag.kind !== 'session') return;
+                event.preventDefault();
+                event.stopPropagation();
+                handleSessionDrop(event, wsKey, '');
               },
-              onDrop: (event) => handleDrop(event, wsKey, ''),
             },
               h('header', { className: 'dssx-browser-group-head' },
                 h('span', { className: 'dssx-browser-group-name dssx-unassigned-name' }, t('unassigned')),
@@ -2781,37 +3326,53 @@ window.__ModuleLoader__.load({
                     unarchiveSession,
                     renderSlot,
                     openSession,
-                    dragging: draggingId === summary.id,
-                    onDragStart: beginDrag,
+                    renameSession,
+                    dragging: drag && drag.kind === 'session' && drag.id === summary.id,
+                    flipKey: 'row:' + summary.id,
+                    onDragStart: (event, id) => {
+                      beginDrag('session', event, { id, workspaceId: wsKey, sectionId: '' });
+                    },
+                    onDragOver: (event, id) => onRowDragOver(event, id, wsKey, '', node.unassigned.map((row) => row.id)),
+                    onDrop: (event) => onRowDrop(event, wsKey, ''),
                     onDragEnd: endDrag,
                     canMoveUp: rowIndex > 0,
                     canMoveDown: rowIndex < node.unassigned.length - 1,
                     onMoveUp: () => moveSessionInGroup(wsKey, '', node.unassigned.map((row) => row.id), rowIndex, -1),
                     onMoveDown: () => moveSessionInGroup(wsKey, '', node.unassigned.map((row) => row.id), rowIndex, 1),
                   })))
+              ))
             )
-          )
-        );
+          );
       });
 
       const orphanCollapsed = collapsedWorkspaces['__orphan__'] === true;
-      if (orphanSessions.length > 0) {
+      // While a session is dragged out of the orphan area, hide it there so the
+      // preview does not show it twice.
+      const shownOrphans = preview && preview.kind === 'session' && preview.fromWs === '' && preview.toWs !== ''
+        ? orphanSessions.filter((summary) => summary.id !== preview.sourceId)
+        : orphanSessions;
+      if (shownOrphans.length > 0) {
         body.push(h('section', { className: 'dssx-browser-ws dssx-orphan-ws', key: '__orphan__' },
-          h('header', { className: 'dssx-browser-ws-head' },
-            h('button', {
-              type: 'button',
-              className: 'dssx-browser-caret',
-              'aria-label': orphanCollapsed ? 'expand' : 'collapse',
+          h('header', {
+            className: 'dssx-browser-ws-head',
+            onClick: (event) => headerToggleClick(event, () => toggleKey(collapsedWorkspaces, setCollapsedWorkspaces, '__orphan__')),
+          },
+            h(RingCaret, {
+              color: '#1f1f1f',
+              size: 36,
+              open: !orphanCollapsed,
+              title: t('orphan.label'),
               onClick: () => toggleKey(collapsedWorkspaces, setCollapsedWorkspaces, '__orphan__'),
-            }, h(IconChevron, { open: !orphanCollapsed })),
+            }),
             h('span', { className: 'dssx-browser-ws-title' }, t('orphan.label')),
-            h('span', { className: cx('dssx-browser-count', 'dssx-browser-ws-count') }, orphanSessions.length),
-            h('span', { className: 'dssx-row-cost dssx-row-cost-static' }, formatCny(sumCost(orphanSessions)))
+            h('span', { className: cx('dssx-browser-count', 'dssx-browser-ws-count') }, shownOrphans.length),
+            h('span', { className: 'dssx-row-cost dssx-row-cost-static' }, formatCny(sumCost(shownOrphans)))
           ),
-          orphanCollapsed ? null : h('div', { className: 'dssx-browser-groups' },
+          h('div', { className: cx('dssx-collapse', orphanCollapsed && 'dssx-collapsed') },
+            h('div', { className: 'dssx-collapse-inner dssx-browser-groups' },
             h('div', { className: 'dssx-browser-group' },
               h('div', { className: 'dssx-browser-rows' },
-                orphanSessions.map((summary) => h(BrowserSessionRow, {
+                shownOrphans.map((summary) => h(BrowserSessionRow, {
                   key: summary.id,
                   t,
                   cost: costOf(summary.id),
@@ -2829,12 +3390,15 @@ window.__ModuleLoader__.load({
                   unarchiveSession,
                   renderSlot,
                   openSession,
-                  dragging: draggingId === summary.id,
-                  onDragStart: beginDrag,
+                  renameSession,
+                  dragging: drag && drag.kind === 'session' && drag.id === summary.id,
+                  onDragStart: (event, id) => {
+                    beginDrag('session', event, { id, workspaceId: '', sectionId: '' });
+                  },
                   onDragEnd: endDrag,
                 })))
             )
-          )
+          ))
         ));
       }
 
@@ -2855,7 +3419,7 @@ window.__ModuleLoader__.load({
       return h(React.Fragment, null,
         h('div', { className: 'dssx-browser' },
           tools,
-          h('div', { className: 'dssx-browser-scroll' }, body),
+          h('div', { className: 'dssx-browser-scroll', ref: scrollRef }, body),
           h('div', { className: 'dssx-browser-foot' },
             h('button', {
               type: 'button',
@@ -2919,7 +3483,7 @@ window.__ModuleLoader__.load({
       '.dssx-empty-row{font-size:12px;color:var(--dsw-alias-label-secondary,#8a857c);padding:6px 2px 6px 26px}',
       '.dssx-inline-form{display:flex;align-items:center;gap:6px;min-width:0}',
       '.dssx-inline-rename{flex:1;min-width:0}',
-      '.dssx-input{flex:1;min-width:0;border:1px solid var(--dsw-alias-border-l1,#e3e0da);border-radius:7px;background:var(--dsw-alias-bg-base,#fff);color:inherit;font:inherit;padding:5px 8px;outline:none}',
+      '.dssx-input{flex:1;min-width:0;border:1px solid var(--dsw-alias-border-l1,#e3e0da);border-radius:7px;background:var(--dsw-alias-bg-base,#fff);color:inherit;font:inherit;padding:5px 8px;outline:none;cursor:text}',
       '.dssx-input:focus{border-color:var(--dsw-alias-brand-primary,#d97757)}',
       '.dssx-btn{border:1px solid var(--dsw-alias-border-l1,#e3e0da);background:var(--dsw-alias-bg-layer-1,#fff);color:inherit;font:inherit;font-size:12px;border-radius:7px;padding:5px 10px;cursor:pointer}',
       '.dssx-btn:hover{background:var(--dsw-alias-interactive-bg-hover,#f2efe9)}',
@@ -2943,11 +3507,11 @@ window.__ModuleLoader__.load({
       '.dssx-choice-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
       '.dssx-dialog-new{display:flex;gap:6px;margin-top:14px;padding-top:14px;border-top:1px solid var(--dsw-alias-border-l1,#e3e0da)}',
       '.dssx-dialog-foot{display:flex;justify-content:flex-end;margin-top:14px}',
-      '.dssx-rename-form{margin-top:14px}',
       '.dssx-dialog-error{margin-top:8px;font-size:12px;line-height:18px;color:var(--dsw-alias-state-error-primary,#c0392b)}',
       '.dssx-browser{display:flex;flex-direction:column;min-height:0;height:100%;padding-top:2px;background:var(--dsw-specific-sidebar-fill,transparent)}',
       '.dssx-browser-tools{display:flex;align-items:center;gap:4px;padding:8px 8px 2px}',
       '.dssx-browser-tools-title{flex:1;min-width:0;font-size:16px;line-height:22px;font-weight:600;color:var(--dsw-alias-label-secondary,#6b6b6b);padding-left:4px}',
+      '.dssx-browser-balance{flex:none;margin-right:2px;cursor:default}',
       '.dssx-browser-tool{width:28px;height:28px;flex:none;border:none;background:transparent;border-radius:6px;color:var(--dsw-alias-label-secondary,#6b6b6b);cursor:pointer;font-size:14px;line-height:1;display:inline-flex;align-items:center;justify-content:center;padding:0;opacity:.8;transition:opacity .12s ease}',
       '.dssx-browser-tool:hover{background:var(--dsw-alias-interactive-bg-hover,#f2efe9);color:var(--dsw-alias-label-primary,#1f1f1f);opacity:1}',
       '.dssx-browser-tool.dssx-active{background:var(--dsw-alias-interactive-bg-hover,#f2efe9);color:var(--dsw-alias-brand-primary,#c25a37);opacity:1}',
@@ -2962,17 +3526,35 @@ window.__ModuleLoader__.load({
       '.dssx-browser-scroll::-webkit-scrollbar-thumb{background:var(--dsw-alias-border-l2,#d6d0c6);border-radius:4px}',
       '.dssx-browser-scroll::-webkit-scrollbar-thumb:hover{background:var(--dsw-alias-label-secondary,#a39d92)}',
       '.dssx-unassigned-group{margin-top:4px;padding-top:4px;border-top:1px dashed var(--dsw-alias-border-l1,#e3e0da)}',
-      '.dssx-browser-ws{margin-top:10px}',
-      '.dssx-browser-ws-head{display:flex;align-items:center;gap:5px;padding:5px 6px;border-radius:6px}',
+      '.dssx-browser-ws{margin-top:10px;position:relative}',
+      '.dssx-browser-ws-head{display:flex;align-items:center;gap:5px;padding:5px 6px;border-radius:6px;cursor:pointer}',
       '.dssx-browser-ws-head:hover{background:var(--dsw-alias-interactive-bg-hover,#f2efe9)}',
       '.dssx-browser-caret{width:22px;height:22px;flex:none;border:none;background:transparent;border-radius:5px;color:var(--dsw-alias-label-secondary,#8a857c);cursor:pointer;font-size:10px;line-height:1;display:inline-flex;align-items:center;justify-content:center;padding:0}',
       '.dssx-browser-caret:hover{background:var(--dsw-alias-interactive-bg-hover,#f2efe9)}',
-      '.dssx-browser-ws-title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px;line-height:20px;font-weight:600;color:var(--dsw-alias-label-primary,#1f1f1f);letter-spacing:.01em}',
+      // Ring caret on group / workspace headers: the ring takes the group colour
+      // (workspaces use a fixed #1f1f1f), the arrow follows the task-list language:
+      // up = collapsed, down = expanded, right = hover.
+      '.dssx-ring-caret{flex:none;border:none;background:transparent;border-radius:6px;padding:0;display:inline-flex;align-items:center;justify-content:center;cursor:pointer;color:inherit}',
+      '.dssx-ring-caret:hover{background:transparent}',
+      '.dssx-ring-arrow{transform-origin:20px 15px;transform:translateX(0) rotate(0deg);transition:transform .4s cubic-bezier(.3,.9,.4,1)}',
+      // Down pose ends below the ring (a 180° turn around the ring centre); the
+      // taller viewBox gives it room. Hover wins and swings the arrow right.
+      '.dssx-ring-caret.dssx-ring-open .dssx-ring-arrow{transform:rotate(180deg)}',
+      '.dssx-browser-group-head:hover .dssx-ring-arrow,.dssx-browser-ws-head:hover .dssx-ring-arrow,.dssx-ring-caret:hover .dssx-ring-arrow{transform:translateX(0) rotate(90deg)}',
+      '.dssx-ring-arrow-scale{transform-origin:20px 3px;transform:scale(.7);transition:transform .4s cubic-bezier(.3,.9,.4,1)}',
+      '.dssx-browser-group-head:hover .dssx-ring-arrow-scale,.dssx-browser-ws-head:hover .dssx-ring-arrow-scale,.dssx-ring-caret:hover .dssx-ring-arrow-scale{transform:scale(1.9)}',
+      '.dssx-ring-arrow-squash{transform-origin:20px 0px;transform:scaleY(1);transition:transform .4s cubic-bezier(.3,.9,.4,1)}',
+      '.dssx-browser-group-head:hover .dssx-ring-arrow-squash,.dssx-browser-ws-head:hover .dssx-ring-arrow-squash,.dssx-ring-caret:hover .dssx-ring-arrow-squash{transform:scaleY(.55)}',
+      '.dssx-ring-arrow-mini{opacity:0;transition:opacity .3s ease}',
+      '.dssx-browser-group-head:hover .dssx-ring-arrow-mini,.dssx-browser-ws-head:hover .dssx-ring-arrow-mini,.dssx-ring-caret:hover .dssx-ring-arrow-mini{opacity:1}',
+      '@media (prefers-reduced-motion: reduce){.dssx-ring-arrow,.dssx-ring-arrow-scale,.dssx-ring-arrow-squash{transition:none}}',
+      '.dssx-browser-ws-title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px;line-height:20px;font-weight:600;color:var(--dsw-alias-label-primary,#1f1f1f);letter-spacing:.01em;margin-left:-18px;transition:transform .2s ease}',
+      '.dssx-browser-ws-head:hover .dssx-browser-ws-title{transform:translateX(20px)}',
       '.dssx-browser-count{flex:none;font-size:12px;color:var(--dsw-alias-label-secondary,#a39d92)}',
       '.dssx-browser-ws-count{font-size:11px;line-height:15px;min-width:20px;padding:0 6px;border-radius:999px;background:var(--dsw-alias-bg-layer-2,#efeae2);text-align:center}',
-      '.dssx-browser-groups{padding-left:8px}',
-      '.dssx-browser-group{margin:2px 0}',
-      '.dssx-browser-group-head{display:flex;align-items:center;gap:5px;padding:3px 6px 3px 4px;border-radius:6px}',
+      '.dssx-browser-groups{padding-left:10px}',
+      '.dssx-browser-group{margin:2px 0;position:relative}',
+      '.dssx-browser-group-head{display:flex;align-items:center;gap:5px;padding:3px 6px 3px 4px;border-radius:6px;cursor:pointer}',
       '.dssx-browser-group-head:hover{background:var(--dsw-alias-interactive-bg-hover,#f2efe9)}',
       '.dssx-browser-group-actions{display:flex;align-items:center;gap:1px;flex:none;opacity:0;transition:opacity .12s ease}',
       '.dssx-browser-group-head:hover .dssx-browser-group-actions,.dssx-browser-group-actions:focus-within,.dssx-browser-group-actions.dssx-visible{opacity:1}',
@@ -2981,22 +3563,49 @@ window.__ModuleLoader__.load({
       '.dssx-color-row{display:flex;align-items:center;gap:6px;padding:3px 8px 6px 30px;flex-wrap:wrap}',
       '.dssx-color-swatch{width:16px;height:16px;border-radius:50%;border:1px solid var(--dsw-alias-border-l1,#e3e0da);cursor:pointer;padding:0}',
       '.dssx-color-swatch.dssx-active{outline:2px solid var(--dsw-alias-brand-primary,#d97757);outline-offset:1px}',
-      '.dssx-browser-group-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px;line-height:20px;color:var(--dsw-alias-label-secondary,#6b6b6b)}',
+      '.dssx-browser-group-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px;line-height:20px;color:var(--dsw-alias-label-secondary,#6b6b6b);margin-left:-15px;transition:transform .2s ease}',
+      '.dssx-browser-group-head:hover .dssx-browser-group-name{transform:translateX(20px)}',
       '.dssx-unassigned-name{color:var(--dsw-alias-label-secondary,#a39d92);font-size:12px;line-height:17px;font-weight:600}',
       '.dssx-browser-rows{display:flex;flex-direction:column;gap:1px}',
-      '.dssx-browser-row{display:flex;align-items:center;gap:2px;padding:1px 3px 1px 2px;border-radius:6px;position:relative;cursor:pointer}',
+      // Grid 0fr->1fr collapse: the ring arrow flips immediately and the list slides
+      // closed, with the rows below following continuously (no jump on either side).
+      '.dssx-collapse{display:grid;grid-template-rows:1fr;transition:grid-template-rows .28s cubic-bezier(.3,.9,.4,1)}',
+      '.dssx-collapse.dssx-collapsed{grid-template-rows:0fr}',
+      '.dssx-collapse-inner{overflow:hidden;min-height:0;transition:opacity .24s ease,transform .24s ease,visibility 0s linear 0s}',
+      '.dssx-collapse.dssx-collapsed>.dssx-collapse-inner{opacity:0;transform:translateX(-16px);visibility:hidden;transition:opacity .24s ease,transform .24s ease,visibility 0s linear .28s}',
+      '@media (prefers-reduced-motion: reduce){.dssx-collapse{transition:none}.dssx-collapse-inner{transition:none}}',
+      '.dssx-browser-row{display:flex;align-items:center;gap:2px;padding:1px 3px 1px 2px;margin-left:14px;border-radius:6px;position:relative;cursor:pointer}',
       '.dssx-browser-row:hover{background:var(--dsw-alias-interactive-bg-hover,#f2efe9)}',
       '.dssx-browser-row.dssx-current{background:var(--dsw-alias-bg-layer-2,#f4f1eb)}',
       '.dssx-browser-row.dssx-current:hover{background:var(--dsw-alias-interactive-bg-hover,#efeae2)}',
       '.dssx-browser-row.dssx-dragging{opacity:.45}',
-      '.dssx-browser-group.dssx-drop-target{outline:2px solid var(--dsw-alias-brand-primary,#d97757);outline-offset:-2px;border-radius:8px;background:var(--dsw-alias-interactive-bg-hover,#f2efe9);transition:outline-color .12s ease}',
-      '.dssx-browser-seat{min-width:16px;flex:none;display:inline-flex;align-items:center;justify-content:center;gap:4px}',
+      // Drag reorder: the moved block fades, the list reorders live underneath
+      // (no insert line). A Session dropped on a group's blank area tints the
+      // whole group instead of outlining it.
+      '.dssx-browser-ws.dssx-dragging,.dssx-browser-group.dssx-dragging{opacity:.45}',
+      '.dssx-browser-group.dssx-drop-into{background:var(--dsw-alias-interactive-bg-hover,#f2efe9);border-radius:8px;transition:background-color .12s ease}',
+      '@media (prefers-reduced-motion: reduce){.dssx-browser-group.dssx-drop-into{transition:none}}',
+      '.dssx-browser-seat{min-width:16px;flex:none;display:inline-flex;align-items:center;justify-content:center;gap:-2px}',
+      // Ring + context ring + title shift together on row hover (ported from the
+      // task list's title nudge).
+      '.dssx-browser-shift{display:flex;align-items:center;gap:2px;flex:1;min-width:0;transition:transform .4s cubic-bezier(.3,.9,.4,1)}',
+      // The session marker keeps 13px of dead space on its right (the hover arrow
+      // grows into it); pull it back so ring, clock, context ring and title sit at
+      // the same rhythm.
+      '.dssx-browser-row>.dssx-marker{margin-right:-15px}',
+      // Ring stays put; only clock / context ring / title shift right, far enough
+      // to clear the arrow that now folds back 2px earlier.
+      '.dssx-browser-row:hover .dssx-browser-shift{transform:translateX(12px)}',
+      // The open session keeps its arrow pointing right (marker-on); keep the same
+      // clearance without hover so the arrow never sits on top of the content.
+      '.dssx-browser-row.dssx-current .dssx-browser-shift{transform:translateX(12px)}',
+      '@media (prefers-reduced-motion: reduce){.dssx-browser-shift{transition:none}}',
       '.dssx-marker{display:inline-flex;flex:none;color:var(--dsw-alias-label-tertiary,#a39d92);transition:color .3s ease}',
       '.dssx-marker-on,.dssx-browser-row:hover .dssx-marker{color:var(--dsw-alias-brand-primary,#d97757)}',
       '.dssx-marker-dot{transform-origin:13px 15px;transform:rotate(180deg);transition:transform .5s cubic-bezier(.3,.9,.4,1)}',
       '.dssx-marker-on .dssx-marker-dot{transform:rotate(0deg)}',
       '.dssx-marker-arrow{transform-origin:13px 15px;transform:translateX(0) rotate(0deg);transition:transform .4s cubic-bezier(.3,.9,.4,1)}',
-      '.dssx-marker-on .dssx-marker-arrow,.dssx-browser-row:hover .dssx-marker:not(.dssx-marker-on) .dssx-marker-arrow{transform:translateX(3px) rotate(90deg)}',
+      '.dssx-marker-on .dssx-marker-arrow,.dssx-browser-row:hover .dssx-marker:not(.dssx-marker-on) .dssx-marker-arrow{transform:translateX(1px) rotate(90deg)}',
       '.dssx-marker-arrow-scale{transform-origin:13px 3px;transform:scale(.7);transition:transform .4s cubic-bezier(.3,.9,.4,1)}',
       '.dssx-marker-on .dssx-marker-arrow-scale,.dssx-browser-row:hover .dssx-marker:not(.dssx-marker-on) .dssx-marker-arrow-scale{transform:scale(1.9)}',
       '.dssx-marker-arrow-squash{transform-origin:13px 0px;transform:scaleY(1);transition:transform .4s cubic-bezier(.3,.9,.4,1)}',
@@ -3021,7 +3630,11 @@ window.__ModuleLoader__.load({
       '@keyframes dssx-ctx-spin{to{transform:rotate(360deg)}}',
       '@media (prefers-reduced-motion: reduce){.dssx-ctx-spin{animation:none}}',
       '.dssx-clock{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;flex:none;color:var(--dsw-alias-label-tertiary,#a39d92)}',
-      '.dssx-browser-open{flex:1;min-width:0;display:flex;align-items:center;gap:6px;border:none;background:transparent;color:inherit;font:inherit;font-size:15px;line-height:22px;text-align:left;cursor:pointer;padding:4px 2px;border-radius:6px}',
+      '.dssx-browser-open{flex:1;min-width:0;display:flex;align-items:center;gap:6px;border:none;background:transparent;color:inherit;font:inherit;font-size:15px;line-height:24px;text-align:left;cursor:pointer;padding:4px 2px;border-radius:6px}',
+      // Inline rename sits where the title button was, so the row height does not jump.
+      '.dssx-rename-inline{flex:1;min-width:0;display:flex;align-items:center}',
+      '.dssx-rename-inline .dssx-input{padding:2px 6px;font-size:15px;line-height:24px;border-radius:6px}',
+      '.dssx-input-invalid{border-color:var(--dsw-alias-state-danger-primary,#d14343);box-shadow:0 0 0 2px rgba(209,67,67,.14)}',
       '.dssx-browser-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
       '.dssx-browser-time{flex:none;margin-left:6px;font-size:11px;line-height:18px;color:var(--dsw-alias-label-tertiary,#a39d92)}',
       '.dssx-browser-actions{display:flex;align-items:center;gap:1px;flex:none;opacity:0}',
@@ -3150,6 +3763,7 @@ window.__ModuleLoader__.load({
           openSession: (sessionId) => {
             ctx.uiWorkspace.openSession(sessionId);
           },
+          renameSession,
           startSession: (workspaceId) => {
             ctx.uiWorkspace.startSession(workspaceId);
           },
@@ -3187,11 +3801,48 @@ window.__ModuleLoader__.load({
           deleteWorkspace: async (workspaceId) => {
             await ctx.workspaces.delete(workspaceId);
           },
+          // Reorder one Workspace; the Controller applies an optimistic order
+          // and reconciles with the Host's complete result.
+          moveWorkspaceBefore: (workspaceId, beforeWorkspaceId) => {
+            const controller = ctx.workspaces;
+            if (!controller || typeof controller.insertBefore !== 'function') return null;
+            return controller.insertBefore(workspaceId, beforeWorkspaceId);
+          },
           openPanel: () => {
             ctx.layout.selectPanel('session-groups');
           },
           refreshProjections: (sessionId) => {
             ctx.sessions.refreshProjections(sessionId).catch(() => {});
+          },
+          // Remaining account balance: the same Host read the settings page uses
+          // (`remote.account.getBalance`), wrapped as a RemoteResult. Returning the
+          // raw wallet keeps formatting in the component.
+          readBalance: async () => {
+            const account = ctx.remote && ctx.remote.account;
+            if (!account || typeof account.getBalance !== 'function') return null;
+            let localeId = 'zh-CN';
+            try {
+              const localeSnapshot = ctx.locale.getSnapshot();
+              if (localeSnapshot && localeSnapshot.active) localeId = localeSnapshot.active;
+            } catch (error) {
+              // Keep the default locale when the snapshot is unavailable.
+            }
+            try {
+              const result = await account.getBalance({
+                version: '0.1.0',
+                locale: localeId,
+                timezoneOffsetSeconds: -new Date().getTimezoneOffset() * 60,
+              });
+              if (!result || result.ok !== true || !result.value) return null;
+              const details = result.value;
+              if (details.status !== 'ready' || !Array.isArray(details.value)) return null;
+              const wallets = details.value;
+              const wallet = wallets.find((item) => item && item.currency === 'CNY') || wallets[0];
+              if (!wallet || typeof wallet.balance !== 'string') return null;
+              return { currency: wallet.currency === 'USD' ? 'USD' : 'CNY', balance: wallet.balance };
+            } catch (error) {
+              return null;
+            }
           },
           scheduleSessions,
           onScheduleChanged,
@@ -3218,16 +3869,10 @@ window.__ModuleLoader__.load({
         locale: NS,
       }, MoveToSectionDialog));
 
-      ctx.slots.inject('shell.overlay', () => ctx.slots.register({
-        name: 'shell.overlay',
-        id: 'session-groups.rename-dialog',
-        locale: NS,
-        inject: () => ({ renameSession }),
-      }, RenameSessionDialog));
     }
 
     return {
-      inject: ['slots', 'locale', 'uiWorkspace', 'layout', 'workspaces', 'sessions', 'remote', 'remote.schedule'],
+      inject: ['slots', 'locale', 'uiWorkspace', 'layout', 'workspaces', 'sessions', 'remote', 'remote.schedule', 'remote.account'],
       apply,
     };
   },
